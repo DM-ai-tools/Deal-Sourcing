@@ -5,20 +5,23 @@
 FROM mcr.microsoft.com/playwright:v1.50.1-jammy
 
 WORKDIR /app
-ENV NODE_ENV=production
 
-# Dependencies first, so a code change does not invalidate the install layer.
+# NODE_ENV is deliberately NOT production yet.
+#
+# The build needs TypeScript and the Prisma CLI, and both are devDependencies.
+# An earlier version set NODE_ENV=production here and then ran
+# `npm ci --omit=dev && npx prisma generate`, which cannot work: the CLI it
+# calls was just omitted. Production is set after the build instead.
 COPY package*.json ./
 COPY prisma ./prisma
-RUN npm ci --omit=dev --ignore-scripts && npx prisma generate
+RUN npm ci --ignore-scripts
 
 COPY . .
 
-# devDependencies are needed to compile, then discarded.
-RUN npm ci --ignore-scripts \
- && npx prisma generate \
- && npm run build \
- && npm prune --omit=dev
+# Generate before compiling — tsc type-checks code that imports the client, so
+# the client has to exist first.
+RUN npx prisma generate && npm run build
 
+ENV NODE_ENV=production
 EXPOSE 3000
 CMD ["node", "dist/src/server.js"]
