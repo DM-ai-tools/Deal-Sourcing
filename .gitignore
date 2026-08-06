@@ -3,3 +3,5 @@ dist/
 .env
 .browser-profile/
 *.log
+.chrome-session/
+search-page.*
