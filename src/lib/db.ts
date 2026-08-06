@@ -46,11 +46,56 @@ export async function getSettings() {
   const existing = await prisma.settings.findUnique({ where: { id: 1 } });
   if (existing) return existing;
 
+  // Seeded with the buyer's real details so the first run needs no typing.
+  // Credentials come from the environment, never from source — the rest is
+  // what goes into a public contact form anyway.
   return prisma.settings.create({
     data: {
       id: 1,
+      fullName: process.env.BUYER_NAME ?? 'Sai Sushant Reddy Allu',
+      email: process.env.BUYER_EMAIL ?? 'deals@hyperboards.com',
+      phone: process.env.BUYER_PHONE ?? '(857) 366-7779',
       messageTemplate: DEFAULT_MESSAGE,
+      bizbuysellEmail: process.env.BBS_EMAIL ?? null,
+      bizbuysellPassword: process.env.BBS_PASSWORD ?? null,
       sendingEnabled: false,
+    },
+  });
+}
+
+/**
+ * The buy-box, ready to run on first boot.
+ *
+ * Twelve industries and an SDE band is a lot of clicking to reproduce from a
+ * screenshot, and getting one box wrong changes which businesses are found
+ * without any error to notice. Seeding it means the first thing the operator
+ * sees is their actual search rather than an empty form.
+ */
+export async function ensureDefaultSearch() {
+  const count = await prisma.search.count();
+  if (count > 0) return;
+
+  await prisma.search.create({
+    data: {
+      name: 'Family office buy-box',
+      states: [],
+      industries: [
+        'automotive-and-boat',
+        'building-and-construction',
+        'communication-and-media',
+        'education-and-children',
+        'entertainment-and-recreation',
+        'financial-services',
+        'health-care-and-fitness',
+        'manufacturing',
+        'non-classifiable-establishments',
+        'online-and-technology',
+        'service-businesses',
+        'wholesale-and-distributors',
+      ],
+      cashFlowMin: 750_000,
+      cashFlowMax: 1_000_000,
+      excludeAuctions: true,
     },
   });
 }

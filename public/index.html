@@ -93,6 +93,15 @@
     background:var(--bg);border:1px solid var(--line-2)}
   .switch input{width:auto}
   code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+  .guide{background:linear-gradient(180deg,#161d2a,#141a24);border:1px solid #2a3547;
+    border-radius:var(--radius);padding:18px 20px;margin-bottom:18px}
+  .guide h4{margin:0 0 10px;font-size:13px;font-weight:650;color:#a9c4ef;letter-spacing:.01em;
+    text-transform:uppercase;letter-spacing:.06em}
+  .guide ol{margin:0;padding-left:20px;font-size:13.2px;line-height:1.75;color:var(--ink-2)}
+  .guide ol li{margin-bottom:5px}
+  .guide ol li b{color:var(--ink)}
+  .guide p{margin:9px 0 0;font-size:12.5px;color:var(--ink-3);line-height:1.6}
+  .hint{font-size:12.2px;color:var(--ink-3);margin:-6px 0 14px;line-height:1.6}
 </style>
 </head>
 <body>
@@ -116,6 +125,16 @@
   <section class="view on" id="view-tracker">
     <h2>Tracker</h2>
     <p class="sub">Every listing found, its financials, and where the conversation has got to.</p>
+    <div class="guide">
+      <h4>How this works</h4>
+      <ol>
+        <li>The system fills this table for you when a run finishes — you never add rows by hand.</li>
+        <li>Once a broker replies, move the listing along with the <b>Status</b> dropdown on its row.</li>
+        <li><b>Export CSV</b> gives you the six columns exactly as specified, ready for a spreadsheet.</li>
+      </ol>
+      <p>A re-run never changes a status you have set, and never contacts the same listing twice.
+         EBITDA is blank on most listings because BizBuySell shows it as “Not Disclosed”.</p>
+    </div>
     <div class="grid g3" id="stats" style="margin-bottom:18px"></div>
     <div class="row" style="margin-bottom:14px">
       <input id="q" placeholder="Search listings…" style="max-width:280px">
@@ -138,6 +157,16 @@
   <section class="view" id="view-searches">
     <h2>Searches</h2>
     <p class="sub">Define the buy-box once, then run it as often as you like.</p>
+    <div class="guide">
+      <h4>Getting started</h4>
+      <ol>
+        <li>Your buy-box is already saved below — <b>12 industries, SDE $750k–$1M, auctions excluded</b>.</li>
+        <li>Press <b>Start dry run</b>. It finds and records every match, prepares each message, and sends nothing.</li>
+        <li>Check the Tracker, then read a prepared message under Settings to confirm the wording.</li>
+        <li>When you are happy, arm sending in <b>Settings</b> and use <b>Start live run</b>.</li>
+      </ol>
+      <p>Leave every state unticked for all locations. Preview URLs shows exactly which pages will be swept.</p>
+    </div>
     <div class="card">
       <h3>New search</h3>
       <div class="grid g2" style="margin-bottom:16px">
@@ -166,6 +195,16 @@
   <section class="view" id="view-runs">
     <h2>Runs</h2>
     <p class="sub">Each sweep, what it found, and what it sent.</p>
+    <div class="guide">
+      <h4>Reading a run</h4>
+      <ol>
+        <li>A run has two halves: it <b>finds</b> every matching listing, then <b>contacts</b> the new ones.</li>
+        <li><b>Log</b> shows live progress. <b>Stop</b> halts immediately — nothing half-sent.</li>
+        <li>If a run is interrupted, start another; it picks up only the listings never contacted.</li>
+      </ol>
+      <p>“0 listings found” almost always means the site blocked the connection, not that nothing matched.
+         Check Settings → Test connection.</p>
+    </div>
     <div id="runList"></div>
     <div class="card" id="runDetail" style="display:none">
       <h3>Live progress</h3>
@@ -177,6 +216,17 @@
   <section class="view" id="view-settings">
     <h2>Settings</h2>
     <p class="sub">Contact details, the message, pacing, and how the system reaches the site.</p>
+    <div class="guide">
+      <h4>Before your first live run</h4>
+      <ol>
+        <li>Check the <b>contact details</b> and <b>message</b> below — these go on every form.</li>
+        <li>Enter the <b>BizBuySell login</b> for the buyer account.</li>
+        <li>Press <b>Test connection</b>. It must say Reachable, or runs will find nothing.</li>
+        <li>Only then tick <b>Arm sending</b>. Until you do, every run is a dry run.</li>
+      </ol>
+      <p>Start with a low daily cap — 20 or 30 — and long delays. Hundreds of identical
+         messages in a short window is how an account gets suspended.</p>
+    </div>
 
     <div class="card">
       <h3>Sending</h3>

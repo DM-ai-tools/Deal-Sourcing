@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import { env, envProblems } from './lib/env.js';
-import { prisma, probeDatabase, getSettings, countSentToday } from './lib/db.js';
+import { prisma, probeDatabase, getSettings, countSentToday, ensureDefaultSearch } from './lib/db.js';
 import { executeRun, stopRun, isRunning, reconcileOrphanedRuns } from './lib/runner.js';
 import { checkReachability, type TransportConfig } from './lib/transport.js';
 import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/search-url.js';
@@ -423,6 +423,9 @@ app.listen(port, '0.0.0.0', async () => {
   console.log(`  dashboard   ${PUBLIC_DIR}`);
   const problems = envProblems();
   console.log(`  config      ${problems.length ? problems.join('; ') : 'complete'}`);
+
+  // Seed the buy-box so the first screen shows a runnable search, not a form.
+  await ensureDefaultSearch().catch(() => {});
 
   const orphans = await reconcileOrphanedRuns().catch(() => 0);
   if (orphans) console.log(`  recovered   ${orphans} run(s) interrupted by a restart`);

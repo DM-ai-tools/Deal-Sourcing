@@ -451,6 +451,38 @@ $('testTransport').onclick = async () => {
 // Boot
 // ---------------------------------------------------------------------------
 
+/**
+ * Is the database actually there?
+ *
+ * Without this the whole dashboard fails silently: every data call rejects,
+ * the tracker sits on "Loading…" forever, and nothing on screen says why. An
+ * app that looks broken and explains nothing is worse than one that says
+ * plainly what is missing.
+ */
+async function checkDatabase() {
+  try {
+    const health = await fetch('/api/health').then((r) => r.json());
+    if (health.database === 'ok') return true;
+    $('alerts').innerHTML = banner(
+      'bad',
+      'No database connected — this is why nothing loads',
+      'The dashboard is running, but there is nowhere to store searches, listings or settings. ' +
+        'Set <code>DATABASE_URL</code> to a Postgres connection string and run ' +
+        '<code>npx prisma migrate deploy</code>. On Railway, add a Postgres service and set it to ' +
+        '<code>${{Postgres.DATABASE_URL}}</code>.' +
+        (health.problems?.length
+          ? `<div class="log" style="margin-top:8px">${health.problems.map((p) => `<div class="error">${escape(p)}</div>`).join('')}</div>`
+          : ''),
+    );
+    $('listings').innerHTML =
+      '<tr><td colspan="6" class="empty">No database connected — see the message above.</td></tr>';
+    return false;
+  } catch (err) {
+    $('alerts').innerHTML = banner('bad', 'Cannot reach the server', escape(err.message));
+    return false;
+  }
+}
+
 (async function boot() {
   try {
     const meta = await api('/api/meta');
@@ -469,6 +501,10 @@ $('testTransport').onclick = async () => {
     $('alerts').innerHTML = banner('bad', 'Cannot reach the server', escape(err.message));
     return;
   }
-  await loadSettings();
-  await loadListings();
+
+  if (!(await checkDatabase())) return;
+
+  // Each of these can fail independently; one failing must not blank the rest.
+  await loadSettings().catch((err) => toast(err.message));
+  await loadListings().catch((err) => toast(err.message));
 })();
