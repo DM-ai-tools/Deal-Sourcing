@@ -1,0 +1,198 @@
+// BizBuySell deal-sourcing system — persistence.
+//
+// Postgres, not SQLite: Railway's filesystem is ephemeral, and the one thing
+// this system must never lose is the record of who has already been contacted.
+// A wiped database means brokers get messaged twice.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// A saved set of filters. Re-runnable: the same search executed weekly is the
+/// normal mode of operation, which is why filters are a stored entity rather
+/// than arguments to a script.
+model Search {
+  id   String @id @default(cuid())
+  name String
+
+  /// Empty means every location.
+  states     Json @default("[]") // string[] of two-letter codes
+  industries Json @default("[]") // string[] of BizBuySell industry slugs
+
+  cashFlowMin     Int?
+  cashFlowMax     Int?
+  revenueMin      Int?
+  revenueMax      Int?
+  askingPriceMin  Int?
+  askingPriceMax  Int?
+
+  /// Auctions are excluded by default — they are not a broker conversation.
+  excludeAuctions Boolean @default(true)
+
+  active    Boolean  @default(true)
+  runs      Run[]
+  listings  Listing[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// One execution of a search.
+model Run {
+  id       String @id @default(cuid())
+  searchId String
+  search   Search @relation(fields: [searchId], references: [id], onDelete: Cascade)
+
+  /// queued | discovering | contacting | done | stopped | failed
+  status String @default("queued")
+
+  /// A run that only reads and prepares. The default, always — arming is a
+  /// deliberate act because sending cannot be undone.
+  dryRun Boolean @default(true)
+
+  /// Which transport actually reached the site, recorded per run so a failure
+  /// six weeks later can be attributed.
+  transport String @default("firecrawl")
+
+  pagesRead      Int @default(0)
+  listingsFound  Int @default(0)
+  listingsNew    Int @default(0)
+  messagesSent   Int @default(0)
+  messagesFailed Int @default(0)
+
+  error       String?
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  events   RunEvent[]
+  outreach Outreach[]
+
+  @@index([status])
+  @@index([startedAt])
+}
+
+/// Progress, kept in the database rather than in memory so the dashboard shows
+/// the same story after a restart as before it.
+model RunEvent {
+  id    String @id @default(cuid())
+  runId String
+  run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  level   String @default("info") // info | warn | error
+  message String
+  detail  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([runId, createdAt])
+}
+
+/// A business for sale. The listing ID in BizBuySell's own URL is the natural
+/// key — slugs and titles change, that number does not.
+model Listing {
+  id        String  @id @default(cuid())
+  listingId String  @unique
+  searchId  String?
+  search    Search? @relation(fields: [searchId], references: [id], onDelete: SetNull)
+
+  title    String
+  url      String
+  location String?
+
+  askingPrice  Int?
+  grossRevenue Int?
+  cashFlow     Int?
+  ebitda       Int?
+  established  String?
+
+  brokerName  String?
+  brokerPhone String?
+
+  isAuction Boolean @default(false)
+
+  /// Pipeline state. Set to 'email_sent' once by the system and never touched
+  /// by it again — every later value is the team's.
+  status String @default("new")
+  // new | email_sent | nda_signed | cim_sent | in_progress | loi_sent | deal_flow | rejected
+
+  notes String?
+
+  /// Raw extraction, kept so a parsing bug can be re-run without re-fetching.
+  raw Json?
+
+  firstSeenAt DateTime  @default(now())
+  contactedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  outreach Outreach[]
+
+  @@index([status])
+  @@index([searchId])
+}
+
+/// One attempt to contact one listing.
+///
+/// The unique constraint on listingId is the real guarantee that a broker is
+/// never messaged twice. It is enforced here rather than in application code
+/// because a race between two runs would otherwise slip through.
+model Outreach {
+  id        String  @id @default(cuid())
+  listingId String  @unique
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  runId     String?
+  run       Run?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  /// prepared | sent | failed | skipped
+  status String @default("prepared")
+
+  messageBody String
+  fullName    String
+  email       String
+  phone       String?
+
+  attempts     Int     @default(0)
+  error        String?
+  screenshot   String? // base64 PNG of the failure, for auditing
+  confirmation String? // whatever the page said back
+
+  preparedAt DateTime  @default(now())
+  sentAt     DateTime?
+
+  @@index([status])
+}
+
+/// Single-row configuration.
+model Settings {
+  id Int @id @default(1)
+
+  fullName String @default("")
+  email    String @default("")
+  phone    String @default("")
+
+  messageTemplate String @default("")
+
+  /// The master arming switch. False means every run is a dry run whatever the
+  /// run itself requests.
+  sendingEnabled Boolean @default(false)
+
+  dailyCap        Int @default(40)
+  minDelaySeconds Int @default(45)
+  maxDelaySeconds Int @default(120)
+
+  /// firecrawl | local | proxy
+  transport String @default("firecrawl")
+
+  bizbuysellEmail    String?
+  bizbuysellPassword String?
+
+  proxyServer   String?
+  proxyUsername String?
+  proxyPassword String?
+
+  updatedAt DateTime @updatedAt @default(now())
+}

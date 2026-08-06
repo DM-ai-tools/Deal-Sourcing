@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deal Sourcing — BizBuySell</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#151a21; --panel-2:#1b212a; --line:#252d38; --line-2:#333d4b;
+    --ink:#e7ecf3; --ink-2:#9aa7b8; --ink-3:#68758a;
+    --accent:#4c8dff; --accent-dim:#1e3a6b;
+    --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  button{font:inherit;cursor:pointer;border:none;border-radius:8px;padding:8px 14px;
+    background:var(--panel-2);color:var(--ink);border:1px solid var(--line-2);transition:.14s}
+  button:hover:not(:disabled){background:var(--line);border-color:var(--ink-3)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover:not(:disabled){background:#3d7ae8}
+  button.danger{background:transparent;border-color:#5c2a2a;color:#ff8b83}
+  button.danger:hover:not(:disabled){background:#3a1d1d}
+  input,select,textarea{font:inherit;background:var(--bg);color:var(--ink);
+    border:1px solid var(--line-2);border-radius:8px;padding:8px 10px;width:100%}
+  input:focus,select,textarea:focus{outline:none;border-color:var(--accent)}
+  textarea{min-height:150px;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+  label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:5px;font-weight:500}
+  header{display:flex;align-items:center;gap:18px;padding:0 22px;height:56px;
+    border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:20}
+  .logo{font-weight:700;letter-spacing:-.02em;font-size:15px}
+  .logo span{color:var(--accent)}
+  nav{display:flex;gap:2px;margin-left:10px}
+  nav button{background:transparent;border:none;color:var(--ink-2);padding:7px 13px;border-radius:7px}
+  nav button.on{background:var(--panel-2);color:var(--ink)}
+  .spacer{flex:1}
+  .pill{font-size:11px;font-weight:600;padding:4px 10px;border-radius:20px;
+    text-transform:uppercase;letter-spacing:.05em;border:1px solid}
+  .pill.live{background:#1a3a1f;color:var(--good);border-color:#2a5a30}
+  .pill.dry{background:#3a2f14;color:var(--warn);border-color:#5c4a1e}
+  main{max-width:1280px;margin:0 auto;padding:24px 22px 80px}
+  .view{display:none} .view.on{display:block}
+  h2{font-size:19px;margin:0 0 3px;letter-spacing:-.01em}
+  .sub{color:var(--ink-2);font-size:13px;margin:0 0 20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;margin-bottom:16px}
+  .card h3{margin:0 0 14px;font-size:14px;font-weight:600}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;padding:9px 12px;color:var(--ink-3);font-size:11px;font-weight:600;
+    text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--panel-2)}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .muted{color:var(--ink-3)}
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{display:flex;align-items:center;gap:7px;padding:7px 11px;border-radius:8px;
+    background:var(--bg);border:1px solid var(--line-2);cursor:pointer;font-size:12.5px;user-select:none}
+  .chip.on{background:var(--accent-dim);border-color:var(--accent);color:#cfe0ff}
+  .chip input{width:auto;margin:0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px}
+  .stat b{display:block;font-size:24px;font-weight:650;letter-spacing:-.02em}
+  .stat span{font-size:11.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.05em}
+  .banner{border-radius:var(--radius);padding:14px 17px;margin-bottom:16px;font-size:13px;
+    border:1px solid;line-height:1.6}
+  .banner.bad{background:#2a1618;border-color:#5c2a2a;color:#ffb4ae}
+  .banner.warn{background:#2a2214;border-color:#5c4a1e;color:#f0cd7e}
+  .banner.good{background:#12291a;border-color:#2a5a30;color:#8ee79c}
+  .banner b{display:block;margin-bottom:3px;font-size:13.5px}
+  .log{font:12px/1.7 ui-monospace,Menlo,Consolas,monospace;max-height:340px;overflow:auto;
+    background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px}
+  .log div{padding:1px 0} .log .warn{color:var(--warn)} .log .error{color:var(--bad)}
+  .badge{font-size:11px;padding:3px 8px;border-radius:5px;font-weight:600;white-space:nowrap;
+    background:var(--panel-2);border:1px solid var(--line-2);color:var(--ink-2)}
+  .badge.email_sent{background:#12291a;color:#8ee79c;border-color:#2a5a30}
+  .badge.deal_flow{background:#1e2f52;color:#a8c8ff;border-color:#31518f}
+  .badge.rejected{background:#2a1618;color:#ffb4ae;border-color:#5c2a2a}
+  select.status{padding:4px 8px;font-size:12px;width:auto;min-width:120px}
+  .empty{text-align:center;padding:56px 20px;color:var(--ink-3)}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--panel-2);
+    border:1px solid var(--line-2);border-radius:9px;padding:11px 20px;font-size:13px;z-index:99;
+    box-shadow:0 10px 34px rgba(0,0,0,.5)}
+  .switch{display:flex;align-items:center;gap:10px;padding:13px 15px;border-radius:9px;
+    background:var(--bg);border:1px solid var(--line-2)}
+  .switch input{width:auto}
+  code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Deal<span>Sourcing</span></div>
+  <nav>
+    <button data-view="tracker" class="on">Tracker</button>
+    <button data-view="searches">Searches</button>
+    <button data-view="runs">Runs</button>
+    <button data-view="settings">Settings</button>
+  </nav>
+  <div class="spacer"></div>
+  <span id="armPill" class="pill dry">Dry run</span>
+</header>
+
+<main>
+  <div id="alerts"></div>
+
+  <!-- TRACKER -->
+  <section class="view on" id="view-tracker">
+    <h2>Tracker</h2>
+    <p class="sub">Every listing found, its financials, and where the conversation has got to.</p>
+    <div class="grid g3" id="stats" style="margin-bottom:18px"></div>
+    <div class="row" style="margin-bottom:14px">
+      <input id="q" placeholder="Search listings…" style="max-width:280px">
+      <select id="statusFilter" style="max-width:190px"><option value="all">All statuses</option></select>
+      <div class="spacer"></div>
+      <a href="/api/listings.csv"><button>Export CSV</button></a>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Listing</th><th class="num">Asking Price</th><th class="num">Gross Revenue</th>
+          <th class="num">Cash Flow (SDE)</th><th class="num">EBITDA</th><th>Status</th>
+        </tr></thead>
+        <tbody id="listings"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SEARCHES -->
+  <section class="view" id="view-searches">
+    <h2>Searches</h2>
+    <p class="sub">Define the buy-box once, then run it as often as you like.</p>
+    <div class="card">
+      <h3>New search</h3>
+      <div class="grid g2" style="margin-bottom:16px">
+        <div><label>Name</label><input id="sName" value="Family office buy-box" placeholder="e.g. Q3 sweep"></div>
+        <div><label>Cash flow (SDE) minimum — USD</label><input id="sCfMin" type="number" value="750000"></div>
+        <div><label>Cash flow (SDE) maximum — USD</label><input id="sCfMax" type="number" value="1000000"></div>
+      </div>
+      <label>Industries</label>
+      <div class="chips" id="industries" style="margin-bottom:16px"></div>
+      <label>States <span class="muted">— leave all unticked for every location</span></label>
+      <div class="chips" id="states" style="margin-bottom:16px;max-height:150px;overflow:auto"></div>
+      <div class="switch" style="margin-bottom:16px">
+        <input type="checkbox" id="sNoAuctions" checked>
+        <label for="sNoAuctions" style="margin:0">Exclude auctions</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="saveSearch">Save search</button>
+        <button id="previewSearch">Preview URLs</button>
+      </div>
+      <div id="searchPreview"></div>
+    </div>
+    <div id="searchList"></div>
+  </section>
+
+  <!-- RUNS -->
+  <section class="view" id="view-runs">
+    <h2>Runs</h2>
+    <p class="sub">Each sweep, what it found, and what it sent.</p>
+    <div id="runList"></div>
+    <div class="card" id="runDetail" style="display:none">
+      <h3>Live progress</h3>
+      <div class="log" id="runLog"></div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" id="view-settings">
+    <h2>Settings</h2>
+    <p class="sub">Contact details, the message, pacing, and how the system reaches the site.</p>
+
+    <div class="card">
+      <h3>Sending</h3>
+      <div class="switch" style="margin-bottom:14px">
+        <input type="checkbox" id="sendingEnabled">
+        <label for="sendingEnabled" style="margin:0">
+          <b>Arm sending.</b> While this is off every run is a dry run — messages are prepared and shown, never sent.
+        </label>
+      </div>
+      <div class="grid g3">
+        <div><label>Daily cap</label><input id="dailyCap" type="number" min="1" max="500"></div>
+        <div><label>Minimum delay between sends (s)</label><input id="minDelay" type="number" min="5"></div>
+        <div><label>Maximum delay between sends (s)</label><input id="maxDelay" type="number" min="6"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Contact details used on every form</h3>
+      <div class="grid g3">
+        <div><label>Full name</label><input id="fullName"></div>
+        <div><label>Email address</label><input id="email" type="email"></div>
+        <div><label>Phone number</label><input id="phone"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Message</h3>
+      <textarea id="messageTemplate"></textarea>
+      <p class="muted" style="font-size:12px;margin:8px 0 0">
+        <code>{{listing}}</code> is replaced with the listing's name if you want to use it.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>BizBuySell account</h3>
+      <div class="grid g2">
+        <div><label>Email</label><input id="bbsEmail"></div>
+        <div><label>Password <span class="muted" id="pwHint"></span></label><input id="bbsPassword" type="password" placeholder="leave blank to keep current"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Transport — how the system reaches BizBuySell</h3>
+      <div class="grid g2" style="margin-bottom:14px">
+        <div>
+          <label>Method</label>
+          <select id="transport">
+            <option value="firecrawl">Firecrawl — no setup, reading only</option>
+            <option value="local">Local browser — a machine the site trusts</option>
+            <option value="proxy">Browser + residential proxy — unattended</option>
+          </select>
+        </div>
+        <div><label>Proxy server</label><input id="proxyServer" placeholder="http://host:port"></div>
+        <div><label>Proxy username</label><input id="proxyUsername"></div>
+        <div><label>Proxy password</label><input id="proxyPassword" type="password" placeholder="leave blank to keep current"></div>
+      </div>
+      <button id="testTransport">Test connection</button>
+      <div id="transportResult"></div>
+    </div>
+
+    <div class="row"><button class="primary" id="saveSettings">Save settings</button></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
