@@ -45,7 +45,9 @@ RUN npx prisma generate && npm run build
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# xvfb-run because the recommended browser configuration is headed and a
-# container has no display. Headless is itself a detection signal, so this is
-# not a workaround to be optimised away later.
-CMD ["xvfb-run", "-a", "node", "dist/src/server.js"]
+# The entrypoint starts Xvfb and execs the server. The recommended browser
+# configuration is headed — headless is itself a detection signal — so a display
+# is a requirement here, not a workaround to be optimised away later.
+COPY scripts/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+CMD ["/app/entrypoint.sh"]

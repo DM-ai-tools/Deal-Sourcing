@@ -3,5 +3,6 @@ dist
 .git
 .env
 .browser-profile
-scripts
+scripts/probe-*.ts
+scripts/selftest.ts
 *.log
