@@ -345,7 +345,11 @@ class CamoufoxTransport implements Transport {
   readonly kind = 'camoufox' as const;
   readonly canWrite = true;
 
-  private browser: { newPage: () => Promise<Page>; close: () => Promise<void> } | null = null;
+  private browser: {
+    newContext: (options?: Record<string, unknown>) => Promise<BrowserContext>;
+    close: () => Promise<void>;
+  } | null = null;
+  private context: BrowserContext | null = null;
   private warmed = false;
 
   constructor(private readonly opts: { proxy?: { server: string; username?: string; password?: string } } = {}) {}
@@ -368,7 +372,20 @@ class CamoufoxTransport implements Transport {
         // the layer no fingerprint patch reaches, so this is worth having on.
         humanize: true,
         ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
-      })) as { newPage: () => Promise<Page>; close: () => Promise<void> };
+      })) as {
+        newContext: (options?: Record<string, unknown>) => Promise<BrowserContext>;
+        close: () => Promise<void>;
+      };
+
+      // An explicit context with viewport null.
+      //
+      // Calling newPage() straight off the browser makes Playwright apply a
+      // default viewport, and Camoufox rejects that at the protocol layer:
+      // "failed to call method 'Browser.setDefaultViewport'". It generates its
+      // own window geometry as part of the fingerprint, and overriding it would
+      // desync the reported size from the real one — which is itself one of the
+      // tells its issue tracker cites.
+      this.context = await this.browser.newContext({ viewport: null });
     } catch (err) {
       const message = (err as Error).message;
       const nativeBuildMissing = /bindings file|better.sqlite3|MODULE_NOT_FOUND|NODE_MODULE_VERSION/i.test(message);
@@ -389,9 +406,9 @@ class CamoufoxTransport implements Transport {
 
   /** Same reasoning as the Chrome transport: a cold deep URL is answered empty. */
   private async warmUp(): Promise<void> {
-    if (this.warmed || !this.browser) return;
+    if (this.warmed || !this.context) return;
     this.warmed = true;
-    const page = await this.browser.newPage();
+    const page = await this.context.newPage();
     try {
       await page.goto('https://www.bizbuysell.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
       await page.waitForTimeout(7000);
@@ -406,8 +423,9 @@ class CamoufoxTransport implements Transport {
   }
 
   async page(): Promise<Page> {
-    const browser = await this.ensure();
-    return browser.newPage();
+    await this.ensure();
+    if (!this.context) throw new Error('Camoufox context was not created');
+    return this.context.newPage();
   }
 
   async fetch(url: string): Promise<FetchResult> {
@@ -434,7 +452,9 @@ class CamoufoxTransport implements Transport {
   }
 
   async close() {
+    await this.context?.close().catch(() => {});
     await this.browser?.close().catch(() => {});
+    this.context = null;
     this.browser = null;
   }
 }
