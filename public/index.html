@@ -274,10 +274,17 @@
         <div>
           <label>Method</label>
           <select id="transport">
+            <option value="auto">Automatic — try each in turn (recommended)</option>
+            <option value="local">Chrome (patchright) — measured working</option>
+            <option value="camoufox">Camoufox — Firefox anti-detect build</option>
+            <option value="proxy">Chrome + residential proxy — unattended</option>
             <option value="firecrawl">Firecrawl — no setup, reading only</option>
-            <option value="local">Local browser — a machine the site trusts</option>
-            <option value="proxy">Browser + residential proxy — unattended</option>
           </select>
+          <p class="hint" style="margin-top:8px">
+            <b>Automatic</b> tries Chrome, then Camoufox, then Firecrawl, and sticks with whichever
+            returns actual listings. A blocked request here comes back as a normal-looking page with
+            no data in it, so each one is judged on whether listings arrived — not on the status code.
+          </p>
         </div>
         <div><label>Proxy server</label><input id="proxyServer" placeholder="http://host:port"></div>
         <div><label>Proxy username</label><input id="proxyUsername"></div>

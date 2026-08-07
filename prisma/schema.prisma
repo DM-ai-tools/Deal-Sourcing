@@ -184,8 +184,10 @@ model Settings {
   minDelaySeconds Int @default(45)
   maxDelaySeconds Int @default(120)
 
-  /// firecrawl | local | proxy
-  transport String @default("firecrawl")
+  /// firecrawl | local | proxy | camoufox | auto
+  /// Defaults to auto: try the working transport first and fall through the
+  /// alternatives rather than failing on whichever one happened to be selected.
+  transport String @default("auto")
 
   bizbuysellEmail    String?
   bizbuysellPassword String?

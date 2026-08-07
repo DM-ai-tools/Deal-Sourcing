@@ -1,28 +1,50 @@
 /**
  * How this system reaches BizBuySell.
  *
- * BizBuySell sits behind Akamai Bot Manager. Measured on 6 August 2026, from a
+ * BizBuySell sits behind Akamai Bot Manager. Measured 6-7 August 2026 from a
  * residential connection whose ordinary Chrome renders the site perfectly:
  *
  *   plain HTTP request ........................... 403 Access Denied
  *   headless Chromium ............................ 403 Access Denied
  *   headless Chromium + stealth patches .......... 403 Access Denied
- *   real Chrome, visible, stealth patches ........ 403 Access Denied
- *   real Chrome, warmed persistent profile ....... 403 Access Denied
+ *   real Chrome, visible, hand-rolled stealth .... 403 Access Denied
  *   Firecrawl proxy network ...................... homepage yes, search no
+ *   patchright, its own recommended config ....... WORKS — 198 listings
  *
- * No arrangement of code changes that. What changes it is the network the
- * request comes from — which is a deployment decision, not a programming one.
+ * The last line is the one that matters, and the difference between it and the
+ * line above it is instructive: patchright succeeds partly because it does
+ * LESS. No custom user-agent, no viewport override, no injected stealth script.
+ * Those were all present in the failing configuration and all counterproductive
+ * — a spoofed user-agent desyncs from the binary actually making the request,
+ * and a JS shim is its own signature layered on patches that already work below
+ * the JS layer. What patchright removes instead is the `Runtime.enable` CDP
+ * leak, which fires on essentially every automated interaction and which
+ * Akamai's sensor probes for directly.
  *
- * So every byte this system reads from BizBuySell goes through one interface
- * with three implementations behind it. Filters, extraction, the tracker, the
- * scheduler and the dashboard are all written against the interface and none of
- * them know which one is in use. Changing transport is a setting.
+ * Every byte read from the site goes through one interface with several
+ * implementations behind it. Filters, extraction, the tracker, the scheduler
+ * and the dashboard are written against the interface and none of them know
+ * which one is in use — so changing transport is a setting, not a refactor,
+ * and `auto` can fall between them without anything else noticing.
+ *
+ * One trap worth naming: this site answers a blocked client with a complete,
+ * valid-looking page shell containing no data. HTTP 200 is therefore not
+ * evidence of success, which is why the redundancy chain judges a transport on
+ * whether listings actually came back rather than on the status code.
  */
 import { chromium, type BrowserContext, type Page } from 'patchright';
 import { env } from './env.js';
 
-export type TransportKind = 'firecrawl' | 'local' | 'proxy';
+/**
+ * The ways this system can reach BizBuySell.
+ *
+ *   firecrawl  proxy network, read-only, no setup. Partial coverage.
+ *   local      patchright + real Chrome. MEASURED WORKING: 198 listings.
+ *   proxy      the same, routed through residential proxies.
+ *   camoufox   Firefox fork with anti-detect patches compiled in.
+ *   auto       try each in turn until one returns a usable page.
+ */
+export type TransportKind = 'firecrawl' | 'local' | 'proxy' | 'camoufox' | 'auto';
 
 export interface FetchResult {
   ok: boolean;
@@ -294,6 +316,200 @@ class BrowserTransport implements Transport {
 export type { BrowserTransport };
 
 // ---------------------------------------------------------------------------
+// Camoufox — a Firefox fork with anti-detect patches compiled in
+// ---------------------------------------------------------------------------
+
+/**
+ * Camoufox spoofs its fingerprint in C++ rather than by injecting JavaScript,
+ * so there is nothing in the page for a detector to introspect, and no CDP at
+ * all — Firefox speaks Juggler, so the `Runtime.enable` class of leak does not
+ * exist here.
+ *
+ * Two things to know before reaching for it.
+ *
+ * First, it is specifically contraindicated for THIS site. camoufox issue #555
+ * reports Akamai returning 403 to Camoufox while stock Firefox loads fine over
+ * the same protocol, with JA3/JA4 and HTTP/2 fingerprints confirmed identical —
+ * isolating the cause to Camoufox's own patches being detectable at the
+ * behaviour layer. Against Akamai it may be worse than doing nothing.
+ *
+ * Second, it is here anyway, on purpose. Detection landscapes move, the patched
+ * builds get patched again, and a redundancy layer that costs nothing while
+ * idle is worth having ready. It is a selectable mode and never the default.
+ *
+ * The import is lazy because camoufox-js pulls in a native dependency that will
+ * not build on every machine. A missing Camoufox must degrade to a readable
+ * message, not take down the process that would have explained it.
+ */
+class CamoufoxTransport implements Transport {
+  readonly kind = 'camoufox' as const;
+  readonly canWrite = true;
+
+  private browser: { newPage: () => Promise<Page>; close: () => Promise<void> } | null = null;
+  private warmed = false;
+
+  constructor(private readonly opts: { proxy?: { server: string; username?: string; password?: string } } = {}) {}
+
+  private async ensure() {
+    if (this.browser) return this.browser;
+
+    // Import AND launch inside the same guard. The dependency resolves fine on
+    // a machine with no C++ toolchain; it fails later, when a native binding is
+    // actually dereferenced, with "Could not locate the bindings file" — which
+    // says nothing about what to do. Translate it once, here.
+    try {
+      const { Camoufox } = (await import('camoufox-js')) as {
+        Camoufox: (options: Record<string, unknown>) => Promise<unknown>;
+      };
+
+      this.browser = (await Camoufox({
+        headless: false,
+        // Camoufox's own cursor-movement humanisation. Behavioural signals are
+        // the layer no fingerprint patch reaches, so this is worth having on.
+        humanize: true,
+        ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
+      })) as { newPage: () => Promise<Page>; close: () => Promise<void> };
+    } catch (err) {
+      const message = (err as Error).message;
+      const nativeBuildMissing = /bindings file|better.sqlite3|MODULE_NOT_FOUND|NODE_MODULE_VERSION/i.test(message);
+
+      throw new Error(
+        nativeBuildMissing
+          ? 'Camoufox needs a native module (better-sqlite3) that is not built in this ' +
+            'environment. It builds in the Linux container, so this transport works in ' +
+            'production and not on a dev machine without a C++ toolchain. Use the Chrome ' +
+            'transport locally.'
+          : `Camoufox could not start: ${message.slice(0, 160)}`,
+      );
+    }
+
+    await this.warmUp();
+    return this.browser;
+  }
+
+  /** Same reasoning as the Chrome transport: a cold deep URL is answered empty. */
+  private async warmUp(): Promise<void> {
+    if (this.warmed || !this.browser) return;
+    this.warmed = true;
+    const page = await this.browser.newPage();
+    try {
+      await page.goto('https://www.bizbuysell.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForTimeout(7000);
+      await page.mouse.move(600, 380);
+      await page.mouse.wheel(0, 500);
+      await page.waitForTimeout(1200);
+    } catch {
+      /* the fetch that follows reports the real problem */
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+
+  async page(): Promise<Page> {
+    const browser = await this.ensure();
+    return browser.newPage();
+  }
+
+  async fetch(url: string): Promise<FetchResult> {
+    let page: Page | null = null;
+    try {
+      page = await this.page();
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page
+        .waitForSelector('a[href*="/business-opportunity/"]', { timeout: 20_000 })
+        .catch(() => {});
+      await page.waitForTimeout(2500);
+
+      const html = await page.content();
+      const status = response?.status();
+      if (looksBlocked(html, status)) {
+        return { ok: false, url, html, status, blocked: true, reason: 'bot wall' };
+      }
+      return { ok: true, url, html, status };
+    } catch (err) {
+      return { ok: false, url, html: null, reason: (err as Error).message.slice(0, 200) };
+    } finally {
+      await page?.close().catch(() => {});
+    }
+  }
+
+  async close() {
+    await this.browser?.close().catch(() => {});
+    this.browser = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Redundancy
+// ---------------------------------------------------------------------------
+
+/**
+ * Try each transport in turn until one returns a usable page.
+ *
+ * A page counts as usable only if it actually carries listings. That
+ * distinction is the whole point: BizBuySell answers a blocked client with a
+ * complete, valid-looking page shell and no data in it, so "HTTP 200" is not
+ * evidence of anything. Falling back on status alone would stop at the first
+ * transport that was being quietly stonewalled.
+ *
+ * The winner is remembered for the rest of the session, so a sweep of three
+ * hundred pages pays the discovery cost once rather than on every fetch.
+ */
+class RedundantTransport implements Transport {
+  readonly kind = 'auto' as const;
+  readonly canWrite = true;
+
+  private members: Transport[];
+  private preferred: Transport | null = null;
+
+  constructor(members: Transport[]) {
+    this.members = members;
+  }
+
+  async fetch(url: string): Promise<FetchResult> {
+    const order = this.preferred
+      ? [this.preferred, ...this.members.filter((m) => m !== this.preferred)]
+      : this.members;
+
+    let last: FetchResult | null = null;
+
+    for (const member of order) {
+      let result: FetchResult;
+      try {
+        result = await member.fetch(url);
+      } catch (err) {
+        result = { ok: false, url, html: null, reason: (err as Error).message.slice(0, 160) };
+      }
+      last = { ...result, reason: `[${member.kind}] ${result.reason ?? ''}`.trim() };
+
+      if (result.ok && result.html && hasListings(result.html)) {
+        this.preferred = member;
+        return { ...result, reason: `via ${member.kind}` };
+      }
+      // A 200 with no listings is a soft block — keep going rather than
+      // reporting success over an empty page.
+    }
+
+    return last ?? { ok: false, url, html: null, reason: 'no transport available' };
+  }
+
+  async close() {
+    await Promise.all(this.members.map((m) => m.close().catch(() => {})));
+  }
+}
+
+/**
+ * Does this page actually contain results?
+ *
+ * Used to tell a served page from a stonewalled one. Deliberately generous —
+ * a single listing link is enough — because the question is "did the data
+ * layer answer", not "how many matched".
+ */
+export function hasListings(html: string): boolean {
+  return /href=["'][^"']*\/business-opportunity\/[^"']*\/\d+/i.test(html);
+}
+
+// ---------------------------------------------------------------------------
 // Selection
 // ---------------------------------------------------------------------------
 
@@ -305,25 +521,47 @@ export interface TransportConfig {
 }
 
 export function makeTransport(config: TransportConfig): Transport {
+  const proxy = config.proxyServer
+    ? {
+        server: config.proxyServer,
+        username: config.proxyUsername ?? undefined,
+        password: config.proxyPassword ?? undefined,
+      }
+    : undefined;
+
   switch (config.transport) {
     case 'local':
       return new BrowserTransport({ kind: 'local' });
 
     case 'proxy': {
-      if (!config.proxyServer) {
+      if (!proxy) {
         throw new Error(
           'Proxy transport selected but no proxy server is configured. Set one in Settings, ' +
-            'or switch transport to "local" or "firecrawl".',
+            'or choose another mode.',
         );
       }
-      return new BrowserTransport({
-        kind: 'proxy',
-        proxy: {
-          server: config.proxyServer,
-          username: config.proxyUsername ?? undefined,
-          password: config.proxyPassword ?? undefined,
-        },
-      });
+      return new BrowserTransport({ kind: 'proxy', proxy });
+    }
+
+    case 'camoufox':
+      return new CamoufoxTransport({ proxy });
+
+    /**
+     * Redundant mode: the working one first, then the alternatives.
+     *
+     * Order is by measured result, not by preference. patchright is the only
+     * transport observed returning listings from this site; Camoufox is second
+     * because it at least runs a real browser; Firecrawl is last because its
+     * coverage of the pages that matter is currently nil. Whichever answers
+     * first becomes the preferred one for the rest of the session.
+     */
+    case 'auto': {
+      const members: Transport[] = [
+        proxy ? new BrowserTransport({ kind: 'proxy', proxy }) : new BrowserTransport({ kind: 'local' }),
+        new CamoufoxTransport({ proxy }),
+        new FirecrawlTransport(),
+      ];
+      return new RedundantTransport(members);
     }
 
     case 'firecrawl':

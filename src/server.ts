@@ -115,7 +115,7 @@ const settingsSchema = z.object({
   dailyCap: z.number().int().min(1).max(500).optional(),
   minDelaySeconds: z.number().int().min(5).max(3600).optional(),
   maxDelaySeconds: z.number().int().min(6).max(7200).optional(),
-  transport: z.enum(['firecrawl', 'local', 'proxy']).optional(),
+  transport: z.enum(['firecrawl', 'local', 'proxy', 'camoufox', 'auto']).optional(),
   bizbuysellEmail: z.string().max(200).nullable().optional(),
   bizbuysellPassword: z.string().max(200).nullable().optional(),
   proxyServer: z.string().max(300).nullable().optional(),
