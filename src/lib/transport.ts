@@ -591,32 +591,107 @@ export function makeBrowserTransport(config: TransportConfig): BrowserTransport 
  * Surfaced in the dashboard so the answer to "why did the run find nothing" is
  * one click away rather than a support conversation.
  */
-export async function checkReachability(
-  config: TransportConfig,
-): Promise<{ ok: boolean; detail: string; checked: { url: string; ok: boolean; reason?: string }[] }> {
-  const transport = makeTransport(config);
-  const targets = [
-    'https://www.bizbuysell.com/',
-    'https://www.bizbuysell.com/california-businesses-for-sale/',
-  ];
+export interface ModeVerdict {
+  mode: TransportKind;
+  /** works | empty | blocked | error */
+  verdict: 'works' | 'empty' | 'blocked' | 'error';
+  listings: number;
+  seconds: number;
+  detail: string;
+}
 
-  const checked: { url: string; ok: boolean; reason?: string }[] = [];
+/** One search page, filtered exactly as a real run would ask for it. */
+const PROBE_URL =
+  'https://www.bizbuysell.com/manufacturing-businesses-for-sale/?q=' +
+  encodeURIComponent(Buffer.from('lt=30,40,80&cffrom=750000&cfto=1000000', 'utf8').toString('base64'));
+
+/**
+ * Can this specific transport get data, right now?
+ *
+ * ONE transport, ONE page, hard time limit. An earlier version walked every
+ * transport in sequence, launching a browser and warming up for each — which on
+ * the deployed container took longer than the platform's proxy would wait and
+ * came back to the operator as a bare 502. A diagnostic that cannot finish is
+ * worse than no diagnostic, because it looks like the app is broken rather than
+ * the site being blocked.
+ *
+ * The homepage is deliberately NOT tested. Everybody is served the homepage,
+ * including clients that get nothing else, so a pass there is not evidence of
+ * anything. The only question worth asking is whether a filtered search page
+ * comes back carrying listings.
+ */
+export async function checkMode(
+  mode: TransportKind,
+  config: TransportConfig,
+  budgetMs = 90_000,
+): Promise<ModeVerdict> {
+  const started = Date.now();
+  const seconds = () => Math.round((Date.now() - started) / 1000);
+
+  let transport: Transport;
   try {
-    for (const url of targets) {
-      const result = await transport.fetch(url);
-      checked.push({ url, ok: result.ok, reason: result.reason });
-    }
-  } finally {
-    await transport.close();
+    transport = makeTransport({ ...config, transport: mode });
+  } catch (err) {
+    return { mode, verdict: 'error', listings: 0, seconds: seconds(), detail: (err as Error).message };
   }
 
-  const searchOk = checked[1]?.ok ?? false;
-  return {
-    ok: searchOk,
-    detail: searchOk
-      ? `Search pages are reachable via "${config.transport}".`
-      : `Search pages are blocked via "${config.transport}". This is Akamai refusing the connection, ` +
-        `not a fault in the app — try the "local" transport from a trusted machine, or configure residential proxies.`,
-    checked,
+  try {
+    const result = await Promise.race([
+      transport.fetch(PROBE_URL),
+      new Promise<FetchResult>((resolve) =>
+        setTimeout(
+          () => resolve({ ok: false, url: PROBE_URL, html: null, reason: `gave up after ${budgetMs / 1000}s` }),
+          budgetMs,
+        ),
+      ),
+    ]);
+
+    if (!result.ok || !result.html) {
+      return {
+        mode,
+        verdict: result.blocked ? 'blocked' : 'error',
+        listings: 0,
+        seconds: seconds(),
+        detail: result.reason ?? 'no page returned',
+      };
+    }
+
+    // Count listings, not status codes. A blocked client is served a complete,
+    // valid-looking page with no data in it, so HTTP 200 proves nothing.
+    const listings = (result.html.match(/href=["'][^"']*\/business-opportunity\/[^"']*\/\d+/gi) ?? []).length;
+
+    return listings > 0
+      ? { mode, verdict: 'works', listings, seconds: seconds(), detail: `${listings} listings returned` }
+      : {
+          mode,
+          verdict: 'empty',
+          listings: 0,
+          seconds: seconds(),
+          detail: 'page served but carried no listings — a silent block',
+        };
+  } catch (err) {
+    return { mode, verdict: 'error', listings: 0, seconds: seconds(), detail: (err as Error).message.slice(0, 200) };
+  } finally {
+    await transport.close().catch(() => {});
+  }
+}
+
+/**
+ * Test the configured transport, and say plainly what to do about the answer.
+ */
+export async function checkReachability(
+  config: TransportConfig,
+): Promise<{ ok: boolean; detail: string; verdict: ModeVerdict }> {
+  const verdict = await checkMode(config.transport, config);
+
+  const advice: Record<ModeVerdict['verdict'], string> = {
+    works: `"${verdict.mode}" is working — ${verdict.listings} listings came back. Runs will find businesses.`,
+    empty:
+      `"${verdict.mode}" reached the site but was served an empty page. That is Akamai blocking silently, ` +
+      `not an error in the app. Try another mode, or run the browser from a network the site trusts.`,
+    blocked: `"${verdict.mode}" was refused outright: ${verdict.detail}. Try another mode.`,
+    error: `"${verdict.mode}" could not run: ${verdict.detail}`,
   };
+
+  return { ok: verdict.verdict === 'works', detail: advice[verdict.verdict], verdict };
 }

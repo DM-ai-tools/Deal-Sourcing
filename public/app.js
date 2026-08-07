@@ -428,19 +428,45 @@ $('saveSettings').onclick = async () => {
   }
 };
 
+const VERDICT_TONE = { works: 'good', empty: 'bad', blocked: 'bad', error: 'bad' };
+
+function verdictRow(v) {
+  const label = { works: 'WORKS', empty: 'EMPTY', blocked: 'BLOCKED', error: 'ERROR' }[v.verdict] ?? v.verdict;
+  return `<div class="${v.verdict === 'works' ? '' : 'error'}">${label.padEnd(8)} ${escape(v.mode).padEnd(10)} ` +
+    `${String(v.listings).padStart(3)} listings  ${v.seconds}s  ${escape(v.detail).slice(0, 70)}</div>`;
+}
+
 $('testTransport').onclick = async () => {
-  $('transportResult').innerHTML = '<p class="muted" style="margin-top:12px">Testing…</p>';
+  $('transportResult').innerHTML =
+    '<p class="muted" style="margin-top:12px">Testing… a browser mode takes up to 90 seconds.</p>';
   try {
-    const { result } = await api('/api/settings/test-transport', { method: 'POST' });
+    const { result } = await api('/api/settings/test-transport', {
+      method: 'POST',
+      body: JSON.stringify({ mode: $('transport').value }),
+    });
     $('transportResult').innerHTML = banner(
       result.ok ? 'good' : 'bad',
-      result.ok ? 'Reachable' : 'Blocked',
-      escape(result.detail) +
-        '<div class="log" style="margin-top:8px">' +
-        result.checked
-          .map((c) => `<div class="${c.ok ? '' : 'error'}">${c.ok ? 'OK  ' : 'FAIL'} ${escape(c.url)} ${escape(c.reason ?? '')}</div>`)
-          .join('') +
-        '</div>',
+      result.ok ? 'Reachable' : 'Not returning data',
+      escape(result.detail) + `<div class="log" style="margin-top:8px">${verdictRow(result.verdict)}</div>`,
+    );
+  } catch (err) {
+    $('transportResult').innerHTML = banner('bad', 'Test failed', escape(err.message));
+  }
+};
+
+$('testAllModes').onclick = async () => {
+  $('transportResult').innerHTML =
+    '<p class="muted" style="margin-top:12px">Testing every mode in turn — this takes a few minutes. ' +
+    'Each one launches its own browser.</p>';
+  try {
+    const { verdicts, working, recommendation } = await api('/api/settings/test-all-modes', { method: 'POST' });
+    $('transportResult').innerHTML = banner(
+      working.length ? 'good' : 'bad',
+      working.length ? `Working: ${working.join(', ')}` : 'No mode returned data from here',
+      escape(recommendation) +
+        `<div class="log" style="margin-top:8px">${verdicts.map(verdictRow).join('')}</div>` +
+        '<p style="margin:8px 0 0;font-size:12px;opacity:.8">EMPTY means the page was served with no ' +
+        'listings in it — a silent block, not an error.</p>',
     );
   } catch (err) {
     $('transportResult').innerHTML = banner('bad', 'Test failed', escape(err.message));

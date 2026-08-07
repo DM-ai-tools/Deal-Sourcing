@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { env, envProblems } from './lib/env.js';
 import { prisma, probeDatabase, getSettings, countSentToday, ensureDefaultSearch } from './lib/db.js';
 import { executeRun, stopRun, isRunning, reconcileOrphanedRuns } from './lib/runner.js';
-import { checkReachability, type TransportConfig } from './lib/transport.js';
+import { checkReachability, checkMode, type TransportConfig } from './lib/transport.js';
 import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/search-url.js';
 import { DEFAULT_MESSAGE, renderMessage } from './lib/outreach.js';
 
@@ -161,6 +161,36 @@ app.put(
 
 app.post(
   '/api/settings/test-transport',
+  handle(async (req, res) => {
+    const settings = await getSettings();
+    const config: TransportConfig = {
+      transport: settings.transport as TransportConfig['transport'],
+      proxyServer: settings.proxyServer,
+      proxyUsername: settings.proxyUsername,
+      proxyPassword: settings.proxyPassword,
+    };
+
+    // An explicit mode lets the operator test one at a time instead of waiting
+    // for a chain to walk every browser — which is what turned this endpoint
+    // into a 502 on the deployed container.
+    const asked = z
+      .object({ mode: z.enum(['firecrawl', 'local', 'proxy', 'camoufox', 'auto']).optional() })
+      .safeParse(req.body ?? {});
+    const mode = asked.success && asked.data.mode ? asked.data.mode : config.transport;
+
+    ok(res, { result: await checkReachability({ ...config, transport: mode }) });
+  }),
+);
+
+/**
+ * Test every mode and report which ones actually return data.
+ *
+ * Sequential and individually time-boxed. Browsers are heavy and the Chrome
+ * profile is exclusive, so running them at once is not an option — but each one
+ * gets a hard budget, so the whole sweep finishes rather than hanging.
+ */
+app.post(
+  '/api/settings/test-all-modes',
   handle(async (_req, res) => {
     const settings = await getSettings();
     const config: TransportConfig = {
@@ -169,7 +199,24 @@ app.post(
       proxyUsername: settings.proxyUsername,
       proxyPassword: settings.proxyPassword,
     };
-    ok(res, { result: await checkReachability(config) });
+
+    const modes: TransportConfig['transport'][] = ['local', 'camoufox', 'firecrawl'];
+    if (settings.proxyServer) modes.push('proxy');
+
+    const verdicts = [];
+    for (const mode of modes) {
+      verdicts.push(await checkMode(mode, config, 75_000));
+    }
+
+    const working = verdicts.filter((v) => v.verdict === 'works').map((v) => v.mode);
+    ok(res, {
+      verdicts,
+      working,
+      recommendation: working.length
+        ? `Use "${working[0]}" — or leave it on Automatic, which will pick it.`
+        : 'No mode returned data from here. The browser needs to run somewhere this site trusts, ' +
+          'or behind residential proxies.',
+    });
   }),
 );
 
