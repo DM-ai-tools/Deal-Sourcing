@@ -19,7 +19,7 @@
  * scheduler and the dashboard are all written against the interface and none of
  * them know which one is in use. Changing transport is a setting.
  */
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { chromium, type BrowserContext, type Page } from 'patchright';
 import { env } from './env.js';
 
 export type TransportKind = 'firecrawl' | 'local' | 'proxy';
@@ -126,21 +126,39 @@ class FirecrawlTransport implements Transport {
 // Browser — read and write
 // ---------------------------------------------------------------------------
 
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+/**
+ * There is deliberately no user-agent, viewport, locale or timezone override
+ * here, and no injected stealth script.
+ *
+ * Every one of those was present in the previous version and every one made
+ * things worse. patchright patches `navigator.webdriver`, the launch flags and
+ * the CDP leaks below the JavaScript layer; re-patching them from an init
+ * script is redundant AND is itself an injection signature. A spoofed
+ * user-agent desyncs from the binary actually making the request, which is a
+ * stronger signal than not spoofing at all.
+ *
+ * Measured: with this configuration BizBuySell went from "Access Denied" to a
+ * rendered result set of 50 listings.
+ */
+const PROFILE_LOCK = { held: false as boolean, waiters: [] as (() => void)[] };
 
 /**
- * Removes the tells that a stock automated browser leaves in the DOM.
- *
- * Not sufficient on its own against Akamai — proven above — but it costs
- * nothing and it is necessary alongside a network the site accepts.
+ * Chrome takes an exclusive lock on its user-data-dir, so two persistent
+ * contexts on the same path cannot coexist. `checkReachability()` is reachable
+ * from the settings page at any moment, including halfway through a run — this
+ * serialises them rather than letting the second one crash.
  */
-const STEALTH_INIT = `
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
-  window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {} };
-`;
+async function acquireProfile(): Promise<() => void> {
+  if (PROFILE_LOCK.held) {
+    await new Promise<void>((resolve) => PROFILE_LOCK.waiters.push(resolve));
+  }
+  PROFILE_LOCK.held = true;
+  return () => {
+    const next = PROFILE_LOCK.waiters.shift();
+    if (next) next();
+    else PROFILE_LOCK.held = false;
+  };
+}
 
 /**
  * A real browser, optionally routed through a residential proxy.
@@ -154,13 +172,13 @@ class BrowserTransport implements Transport {
   readonly kind: TransportKind;
   readonly canWrite = true;
 
-  private browser: Browser | null = null;
   private context: BrowserContext | null = null;
+  private release: (() => void) | null = null;
+  private warmed = false;
 
   constructor(
     private readonly opts: {
       kind: TransportKind;
-      headless?: boolean;
       proxy?: { server: string; username?: string; password?: string };
       profileDir?: string;
     },
@@ -171,24 +189,67 @@ class BrowserTransport implements Transport {
   private async ensure(): Promise<BrowserContext> {
     if (this.context) return this.context;
 
-    this.browser = await chromium.launch({
-      headless: this.opts.headless ?? true,
+    this.release = await acquireProfile();
+
+    // patchright's documented optimal configuration, unmodified. Persistent
+    // context matters twice over: it is what the project recommends, and it is
+    // where Akamai's cookies accumulate across runs. On Railway this path must
+    // be a mounted Volume or every deploy starts cold.
+    this.context = await chromium.launchPersistentContext(env.profileDir, {
+      channel: 'chrome',
+      headless: false,
+      viewport: null,
       args: [
-        '--disable-blink-features=AutomationControlled',
+        // Required when running as root in a container.
         '--no-sandbox',
+        // Railway exposes no --shm-size control, so this stays even though
+        // patchright would prefer an untouched flag set. Knowing trade-off.
         '--disable-dev-shm-usage',
       ],
       ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
     });
 
-    this.context = await this.browser.newContext({
-      userAgent: UA,
-      viewport: { width: 1440, height: 900 },
-      locale: 'en-US',
-      timezoneId: 'America/New_York',
-    });
-    await this.context.addInitScript(STEALTH_INIT);
+    await this.warmUp();
     return this.context;
+  }
+
+  /**
+   * Land on the homepage before asking for anything else.
+   *
+   * Not politeness — a requirement. Navigating straight to a deep search URL
+   * returns a page with no listings in it, while the identical URL reached
+   * after a homepage visit returns fifty. Akamai's sensor wants to see a client
+   * that loaded the site, ran its script and collected its cookies before it
+   * asks for data; a cold arrival at a filtered URL has none of that history.
+   *
+   * Measured both ways on this machine, minutes apart. This one step is what
+   * separates a working read path from an empty one.
+   *
+   * Once per browser session. The small mouse movement is part of it: the
+   * sensor scores interaction, and a pointer that never moves is its own tell.
+   */
+  private async warmUp(): Promise<void> {
+    if (this.warmed || !this.context) return;
+    this.warmed = true;
+
+    const page = await this.context.newPage();
+    try {
+      await page.goto('https://www.bizbuysell.com/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 60_000,
+      });
+      await page.waitForTimeout(7000);
+      await page.mouse.move(620, 380);
+      await page.waitForTimeout(300);
+      await page.mouse.move(780, 520);
+      await page.mouse.wheel(0, 500);
+      await page.waitForTimeout(1500);
+    } catch {
+      // A failed warm-up is not fatal by itself — the fetch that follows will
+      // report the real problem, against the URL that actually matters.
+    } finally {
+      await page.close().catch(() => {});
+    }
   }
 
   /** A page the caller drives directly — used by the outreach step. */
@@ -202,8 +263,13 @@ class BrowserTransport implements Transport {
     try {
       page = await this.page();
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      // Listing pages hydrate their price block after load.
+      // Results are rendered client-side; wait for the cards rather than the
+      // load event, or every page looks empty.
+      await page
+        .waitForSelector('a[href*="/business-opportunity/"]', { timeout: 20_000 })
+        .catch(() => {});
       await page.waitForTimeout(2500);
+
       const html = await page.content();
       const status = response?.status();
       if (looksBlocked(html, status)) {
@@ -219,9 +285,9 @@ class BrowserTransport implements Transport {
 
   async close() {
     await this.context?.close().catch(() => {});
-    await this.browser?.close().catch(() => {});
     this.context = null;
-    this.browser = null;
+    this.release?.();
+    this.release = null;
   }
 }
 
@@ -241,7 +307,7 @@ export interface TransportConfig {
 export function makeTransport(config: TransportConfig): Transport {
   switch (config.transport) {
     case 'local':
-      return new BrowserTransport({ kind: 'local', headless: env.headlessBrowser });
+      return new BrowserTransport({ kind: 'local' });
 
     case 'proxy': {
       if (!config.proxyServer) {
@@ -252,7 +318,6 @@ export function makeTransport(config: TransportConfig): Transport {
       }
       return new BrowserTransport({
         kind: 'proxy',
-        headless: true,
         proxy: {
           server: config.proxyServer,
           username: config.proxyUsername ?? undefined,
@@ -272,7 +337,6 @@ export function makeBrowserTransport(config: TransportConfig): BrowserTransport 
   if (config.transport === 'proxy' && config.proxyServer) {
     return new BrowserTransport({
       kind: 'proxy',
-      headless: true,
       proxy: {
         server: config.proxyServer,
         username: config.proxyUsername ?? undefined,
@@ -280,7 +344,7 @@ export function makeBrowserTransport(config: TransportConfig): BrowserTransport 
       },
     });
   }
-  return new BrowserTransport({ kind: 'local', headless: env.headlessBrowser });
+  return new BrowserTransport({ kind: 'local' });
 }
 
 /**

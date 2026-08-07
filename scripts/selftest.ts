@@ -11,6 +11,8 @@ import {
   paginate,
   listingIdFrom,
   isListingUrl,
+  decodeSearchQuery,
+  DEFAULT_LISTING_TYPES,
   INDUSTRIES,
   DEFAULT_INDUSTRIES,
   STATES,
@@ -89,8 +91,25 @@ const urls = buildSearchUrls({
 });
 check('one url per industry when no state is set', urls.length === 2);
 check('industry lands in the path', urls[0]!.includes('/manufacturing-businesses-for-sale/'));
-check('cash flow minimum is a query param', urls[0]!.includes('cf_min=750000'));
-check('cash flow maximum is a query param', urls[0]!.includes('cf_max=1000000'));
+// The encoding is BizBuySell's own, established by driving its filter dialog:
+// a single `q` parameter holding base64 of an ordinary query string. Eight
+// guessed parameter names were silently ignored before this was measured, and a
+// search that looks filtered but is not returns the wrong businesses without
+// ever raising an error.
+check('filters travel in a base64 q parameter', urls[0]!.includes('?q='));
+check(
+  'cash flow encodes as cffrom/cfto',
+  decodeSearchQuery(urls[0]!)?.includes('cffrom=750000&cfto=1000000') === true,
+  decodeSearchQuery(urls[0]!) ?? 'no q',
+);
+check(
+  'listing types are always sent',
+  decodeSearchQuery(urls[0]!)?.includes('lt=') === true,
+);
+check(
+  'start-ups are excluded by default',
+  !decodeSearchQuery(urls[0]!)?.includes('20'),
+);
 
 const stateUrls = buildSearchUrls({
   states: ['CA', 'TX'],
@@ -98,14 +117,29 @@ const stateUrls = buildSearchUrls({
 });
 check('states multiply the url set', stateUrls.length === 6);
 check('state slug is used, not the code', stateUrls[0]!.includes('/california/'));
-check('no financial filter means no query string', !stateUrls[0]!.includes('?'));
+// Listing types are always applied, so there is always a q — but never a
+// cash-flow bound that nobody asked for.
+check('no cash-flow bound when none was set', !decodeSearchQuery(stateUrls[0]!)?.includes('cffrom'));
+check(
+  'revenue encodes as gifrom/gito, not grfrom',
+  decodeSearchQuery(
+    buildSearchUrls({ states: [], industries: ['retail'], revenueMin: 1_000_000 })[0]!,
+  )?.includes('gifrom=1000000') === true,
+);
 
 const noIndustry = buildSearchUrls({ states: ['CA'], industries: [] });
 check('no industry falls back to all businesses', noIndustry[0]!.includes('/california-businesses-for-sale/'));
 
 check('page 1 is the bare url', paginate(urls[0]!, 1) === urls[0]);
-check('page 2 adds a page param', paginate(urls[0]!, 2).includes('page=2'));
-check('paginating preserves the filters', paginate(urls[0]!, 3).includes('cf_min=750000'));
+// A path segment, not a parameter. ?page=2 and page=2 inside q are both
+// accepted and both silently return page one — which would make a sweep
+// collect the same fifty results forever and call itself complete.
+check('page 2 is a path segment', paginate(urls[0]!, 2).includes('-for-sale/2/'));
+check('page 2 is not a query param', !paginate(urls[0]!, 2).includes('page=2'));
+check(
+  'paginating preserves the filters',
+  decodeSearchQuery(paginate(urls[0]!, 3))?.includes('cffrom=750000') === true,
+);
 
 // ---------------------------------------------------------------------------
 section('Buy-box reference data');

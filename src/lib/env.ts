@@ -4,6 +4,8 @@
  * rather than as a container that dies during boot.
  */
 import 'dotenv/config';
+import path from 'node:path';
+import os from 'node:os';
 
 function optional(name: string, fallback: string): string {
   const value = process.env[name];
@@ -42,11 +44,15 @@ export const env = {
   },
 
   /**
-   * Headed browsers are more likely to survive bot detection, but a container
-   * has no display. Set BROWSER_HEADLESS=false only where one exists.
+   * Where Chrome keeps its profile.
+   *
+   * Load-bearing rather than a convenience: this directory is where Akamai's
+   * cookies accumulate between runs, and a warm session is part of what gets
+   * the listings XHR answered instead of tarpitted. On Railway this must be a
+   * mounted Volume — otherwise every deploy wipes it and starts cold.
    */
-  get headlessBrowser(): boolean {
-    return optional('BROWSER_HEADLESS', 'true') !== 'false';
+  get profileDir(): string {
+    return optional('PROFILE_DIR', path.join(os.tmpdir(), 'bizbuysell-profile'));
   },
 
   get nodeEnv(): string {

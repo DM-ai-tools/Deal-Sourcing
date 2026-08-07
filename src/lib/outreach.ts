@@ -15,7 +15,7 @@
  *   - A failure captures a screenshot, because "it didn't work" is not a
  *     diagnosis and this page is not ours to guess about.
  */
-import type { Page } from 'playwright';
+import type { Page } from 'patchright';
 import type { BrowserTransport } from './transport.js';
 
 export interface ContactDetails {

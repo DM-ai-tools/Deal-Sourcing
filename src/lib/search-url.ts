@@ -88,6 +88,8 @@ export interface SearchFilters {
   askingPriceMin?: number | null;
   askingPriceMax?: number | null;
   excludeAuctions?: boolean;
+  /** BizBuySell listing-type codes. Defaults to everything except start-ups. */
+  listingTypes?: number[];
 }
 
 const BASE = 'https://www.bizbuysell.com';
@@ -129,31 +131,90 @@ export function buildSearchUrls(filters: SearchFilters): string[] {
 }
 
 /**
- * Financial filters as query parameters.
+ * Listing types, as BizBuySell numbers them.
  *
- * BizBuySell's own "More Filters" dialog posts these names. They are additive:
- * an absent parameter means no bound, which is why undefined is skipped rather
- * than sent as an empty string — an empty bound returns nothing at all.
+ * Read off the site's own Listing Types control. Note there is NO auction type:
+ * auctions are a property of individual listings, not a category, which is why
+ * they have to be detected from listing text rather than filtered out here.
+ */
+export const LISTING_TYPES = {
+  startups: 20,
+  assetSales: 30,
+  established: 40,
+  realEstate: 80,
+} as const;
+
+/** What a search from the site's own homepage applies: everything but start-ups. */
+export const DEFAULT_LISTING_TYPES = [
+  LISTING_TYPES.assetSales,
+  LISTING_TYPES.established,
+  LISTING_TYPES.realEstate,
+];
+
+/**
+ * The financial filters, in BizBuySell's own encoding.
+ *
+ * The site carries filter state in a single `q` parameter that is base64 of an
+ * ordinary query string. This was established by driving the real More Filters
+ * dialog and reading what the address bar became — not by guessing, because
+ * guessing was tried first and every one of eight plausible parameter names was
+ * silently ignored. A search that looks filtered and is not returns the wrong
+ * businesses without ever raising an error, which is the failure mode worth the
+ * most effort to avoid.
+ *
+ * Verified encodings:
+ *   cffrom / cfto   cash flow (SDE)      1,500+ results -> 92
+ *   gifrom / gito   gross revenue        "gross income", NOT grfrom/grto
+ *   lt              listing types, comma separated
+ *
+ * Asking price was not confirmed the same way; `prfrom`/`prto` follows the
+ * pattern but is unverified, so it is sent only when explicitly set and should
+ * be checked against a result count before anyone relies on it.
  */
 function financialQuery(filters: SearchFilters): string {
-  const params = new URLSearchParams();
+  const parts: string[] = [];
 
-  if (filters.cashFlowMin != null) params.set('cf_min', String(filters.cashFlowMin));
-  if (filters.cashFlowMax != null) params.set('cf_max', String(filters.cashFlowMax));
-  if (filters.revenueMin != null) params.set('gr_min', String(filters.revenueMin));
-  if (filters.revenueMax != null) params.set('gr_max', String(filters.revenueMax));
-  if (filters.askingPriceMin != null) params.set('pr_min', String(filters.askingPriceMin));
-  if (filters.askingPriceMax != null) params.set('pr_max', String(filters.askingPriceMax));
+  const listingTypes = filters.listingTypes?.length
+    ? filters.listingTypes
+    : DEFAULT_LISTING_TYPES;
+  parts.push(`lt=${listingTypes.join(',')}`);
 
-  const query = params.toString();
-  return query ? `?${query}` : '';
+  if (filters.cashFlowMin != null) parts.push(`cffrom=${filters.cashFlowMin}`);
+  if (filters.cashFlowMax != null) parts.push(`cfto=${filters.cashFlowMax}`);
+  if (filters.revenueMin != null) parts.push(`gifrom=${filters.revenueMin}`);
+  if (filters.revenueMax != null) parts.push(`gito=${filters.revenueMax}`);
+  if (filters.askingPriceMin != null) parts.push(`prfrom=${filters.askingPriceMin}`);
+  if (filters.askingPriceMax != null) parts.push(`prto=${filters.askingPriceMax}`);
+
+  if (parts.length === 0) return '';
+  return `?q=${encodeURIComponent(Buffer.from(parts.join('&'), 'utf8').toString('base64'))}`;
+}
+
+/** Decode a search URL's `q` back to readable filters. For tests and debugging. */
+export function decodeSearchQuery(url: string): string | null {
+  try {
+    const q = new URL(url).searchParams.get('q');
+    return q ? Buffer.from(q, 'base64').toString('utf8') : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Page 2 onward of a result set. */
 export function paginate(url: string, page: number): string {
   if (page <= 1) return url;
+
+  // The page number is a PATH SEGMENT, not a parameter:
+  //   /manufacturing-businesses-for-sale/2/?q=...
+  //
+  // `?page=2`, and the same key inside the base64 `q` blob, are both accepted
+  // and both silently ignored — every one returned page one's listings under a
+  // different URL. A sweep built on that would collect the first fifty results
+  // over and over, dedupe them back to fifty, and report a complete run over a
+  // search with hundreds of matches. Verified by comparing the first listing id
+  // rather than the result count, which does not change between pages.
   const parsed = new URL(url);
-  parsed.searchParams.set('page', String(page));
+  parsed.pathname = `${parsed.pathname.replace(/\/$/, '')}/${page}/`;
   return parsed.toString();
 }
 

@@ -105,42 +105,44 @@ export function looksLikeAuction(text: string): boolean {
  * anything missing simply stays null until the detail page fills it in.
  */
 export function extractSearchResults(html: string): ExtractedListing[] {
-  const anchor = /<a\b[^>]*href=["']([^"']*\/business-opportunity\/[^"']+)["'][^>]*>([\s\S]{0,400}?)<\/a>/gi;
+  // Match the HREF, not the anchor element.
+  //
+  // The previous version matched `<a ...>inner</a>` with the inner content
+  // bounded to 400 characters. On the real site a result card's anchor wraps
+  // the entire card — image, title, blurb, figures — and runs to hundreds of
+  // kilobytes, so the pattern matched nothing at all: 51 listings on the page,
+  // zero extracted, and the run reported "no listings" as though the search had
+  // legitimately come back empty. Keying off the href and using positions
+  // removes any dependence on how the card is nested.
+  const href = /href=["']([^"']*\/business-opportunity\/[^"']+)["']/gi;
 
-  // Collect the anchors first, because a card's boundary is the next card's
-  // anchor. A fixed-width window instead of a real boundary reads the following
-  // listing's figures and flags — one auction on a page marked its neighbour as
-  // an auction too, and prices came out belonging to the card above.
-  const anchors: { url: string; listingId: string; title: string; index: number }[] = [];
+  const hits: { url: string; listingId: string; index: number }[] = [];
+  const seenId = new Set<string>();
   let match: RegExpExecArray | null;
 
-  while ((match = anchor.exec(html)) !== null) {
-    const href = match[1]!;
-    const url = href.startsWith('http') ? href : `https://www.bizbuysell.com${href}`;
+  while ((match = href.exec(html)) !== null) {
+    const raw = match[1]!;
+    const url = (raw.startsWith('http') ? raw : `https://www.bizbuysell.com${raw}`).split('?')[0]!;
     const listingId = listingIdFrom(url);
-    if (!listingId) continue;
-
-    const title = stripTags(match[2] ?? '');
-    if (!title || title.length < 4) continue;
-
-    anchors.push({ url: url.split('?')[0]!, listingId, title, index: match.index });
+    if (!listingId || seenId.has(listingId)) continue;
+    seenId.add(listingId);
+    hits.push({ url, listingId, index: match.index });
   }
 
-  const found = new Map<string, ExtractedListing>();
+  const found: ExtractedListing[] = [];
 
-  for (const [position, entry] of anchors.entries()) {
-    if (found.has(entry.listingId)) continue;
+  for (const [position, hit] of hits.entries()) {
+    // A card ends where the next listing's link begins. A fixed window instead
+    // would read the next card's figures and auction wording — which it did,
+    // marking a listing's innocent neighbour as an auction.
+    const end = Math.min(hits[position + 1]?.index ?? html.length, hit.index + 6000);
+    const card = html.slice(hit.index, end);
+    const cardText = stripTags(card);
 
-    // From this anchor to the next one for a different listing — a card often
-    // contains several anchors to itself (image, title, "view details").
-    const nextDifferent = anchors.slice(position + 1).find((a) => a.listingId !== entry.listingId);
-    const end = Math.min(nextDifferent?.index ?? html.length, entry.index + 4000);
-    const cardText = stripTags(html.slice(entry.index, end));
-
-    found.set(entry.listingId, {
-      listingId: entry.listingId,
-      url: entry.url,
-      title: entry.title.slice(0, 300),
+    found.push({
+      listingId: hit.listingId,
+      url: hit.url,
+      title: titleFor(card, cardText, hit.url),
       location: locationFrom(cardText),
       askingPrice: parseMoney(labelledValue(cardText, ['Asking Price', 'Price'])),
       grossRevenue: parseMoney(labelledValue(cardText, ['Gross Revenue', 'Revenue'])),
@@ -153,7 +155,28 @@ export function extractSearchResults(html: string): ExtractedListing[] {
     });
   }
 
-  return [...found.values()];
+  return found;
+}
+
+/**
+ * A card's title, by whichever route works.
+ *
+ * Headings first, then the card's own leading text, then the URL slug. The slug
+ * fallback matters: it is never wrong, only less pretty, so a listing can never
+ * be dropped merely because its markup changed shape.
+ */
+function titleFor(card: string, cardText: string, url: string): string {
+  const heading = card.match(/<h[1-4][^>]*>([\s\S]{0,300}?)<\/h[1-4]>/i)?.[1];
+  const fromHeading = heading ? stripTags(heading) : '';
+  if (fromHeading.length >= 4) return fromHeading.slice(0, 300);
+
+  const lead = cardText.trim().split(/\s{2,}|\n/)[0]?.trim() ?? '';
+  if (lead.length >= 8 && lead.length <= 200) return lead.slice(0, 300);
+
+  const slug = url.match(/\/business-opportunity\/([^/]+)\//)?.[1] ?? '';
+  return slug
+    ? slug.split('-').map((w) => (w[0] ? w[0].toUpperCase() + w.slice(1) : w)).join(' ').slice(0, 300)
+    : 'Untitled listing';
 }
 
 /** "Pittsburg, CA (Contra Costa County)" and similar. */
