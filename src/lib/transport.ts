@@ -619,6 +619,14 @@ export function makeBrowserTransport(config: TransportConfig): WritableTransport
     case 'camoufox':
       return new CamoufoxTransport({ proxy });
 
+    // Explicit, not falling through to the default. Omitting this sent every
+    // 'local' request to Camoufox — which on a dev machine with no native build
+    // reported "Camoufox needs better-sqlite3" for a mode that never asked for
+    // Camoufox. A default branch that silently swallows a named option is worse
+    // than no default at all.
+    case 'local':
+      return new BrowserTransport({ kind: 'local', proxy });
+
     case 'proxy':
       if (proxy) return new BrowserTransport({ kind: 'proxy', proxy });
       return new BrowserTransport({ kind: 'local' });

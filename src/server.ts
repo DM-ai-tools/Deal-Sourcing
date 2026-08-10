@@ -508,48 +508,79 @@ app.patch(
   }),
 );
 
-/** The tracker as the client asked for it, in the column order they gave. */
+/**
+ * The tracker as CSV, in the column order the client gave.
+ *
+ * One builder, two routes: the dashboard's download button wants an attachment,
+ * and Google Sheets' IMPORTDATA wants to read the body. Same bytes either way —
+ * if these ever drifted, the sheet and the exported file would disagree about
+ * what was sent, which is the one thing a tracker cannot afford.
+ */
+async function buildTrackerCsv(): Promise<string> {
+  const listings = await prisma.listing.findMany({
+    orderBy: { firstSeenAt: 'desc' },
+    include: { outreach: { select: { status: true, sentAt: true } } },
+  });
+  const cell = (value: unknown) => {
+    const text = value == null ? '' : String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const stamp = (value: Date | null | undefined) =>
+    value ? new Date(value).toISOString().slice(0, 16).replace('T', ' ') : '';
+
+  const rows = [
+    [
+      'Listing Name', 'Link', 'Date Listed', 'Asking Price', 'Gross Revenue',
+      'Cash Flow (SDE)', 'EBITDA', 'Broker', 'Broker Phone',
+      'Message Sent', 'Sent At', 'Responded', 'Responded At', 'Their Response', 'Status',
+    ],
+    ...listings.map((l) => {
+      const sent = l.outreach.find((o) => o.status === 'sent');
+      return [
+        l.title,
+        l.url,
+        l.datePosted ?? '',
+        l.askingPrice ?? '',
+        l.grossRevenue ?? '',
+        l.cashFlow ?? '',
+        l.ebitda ?? '',
+        l.brokerName ?? '',
+        l.brokerPhone ?? '',
+        sent ? 'YES' : 'NO',
+        stamp(sent?.sentAt),
+        l.respondedAt ? 'YES' : 'NO',
+        stamp(l.respondedAt),
+        l.responseNote ?? '',
+        l.status,
+      ];
+    }),
+  ];
+  return rows.map((r) => r.map(cell).join(',')).join('\n');
+}
+
+/** Download button — an attachment, so the browser saves it. */
 app.get(
   '/api/listings.csv',
   handle(async (_req, res) => {
-    const listings = await prisma.listing.findMany({
-      orderBy: { firstSeenAt: 'desc' },
-      include: { outreach: { select: { status: true, sentAt: true } } },
-    });
-    const cell = (value: unknown) => {
-      const text = value == null ? '' : String(value);
-      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-    };
-    const rows = [
-      [
-        'Listing Name', 'Link', 'Date Listed', 'Asking Price', 'Gross Revenue',
-        'Cash Flow (SDE)', 'EBITDA', 'Broker', 'Broker Phone',
-        'Message Sent', 'Sent At', 'Responded', 'Responded At', 'Their Response', 'Status',
-      ],
-      ...listings.map((l) => {
-        const sent = l.outreach.find((o) => o.status === 'sent');
-        return [
-          l.title,
-          l.url,
-          l.datePosted ?? '',
-          l.askingPrice ?? '',
-          l.grossRevenue ?? '',
-          l.cashFlow ?? '',
-          l.ebitda ?? '',
-          l.brokerName ?? '',
-          l.brokerPhone ?? '',
-          sent ? 'YES' : 'NO',
-          sent?.sentAt ? new Date(sent.sentAt).toISOString().slice(0, 16).replace('T', ' ') : '',
-          l.respondedAt ? 'YES' : 'NO',
-          l.respondedAt ? new Date(l.respondedAt).toISOString().slice(0, 16).replace('T', ' ') : '',
-          l.responseNote ?? '',
-          l.status,
-        ];
-      }),
-    ];
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="bizbuysell-tracker.csv"');
-    res.send(rows.map((r) => r.map(cell).join(',')).join('\n'));
+    res.send(await buildTrackerCsv());
+  }),
+);
+
+/**
+ * Google Sheets — served inline so `IMPORTDATA()` can read the body.
+ *
+ * This is what makes the sheet live with no Google credentials at all: no
+ * service account, no OAuth consent, no key to rotate. One formula in A1 and
+ * Sheets re-fetches it roughly hourly.
+ */
+app.get(
+  '/api/sheet.csv',
+  handle(async (_req, res) => {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(await buildTrackerCsv());
   }),
 );
 

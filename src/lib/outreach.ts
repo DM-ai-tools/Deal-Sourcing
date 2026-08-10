@@ -91,6 +91,32 @@ export async function login(
 }
 
 /**
+ * The first VISIBLE element matching any of these selectors.
+ *
+ * A listing page carries three copies of the contact form — one in the rail,
+ * others hidden for other breakpoints — plus five iframes and forty-three
+ * inputs. A comma-separated selector matches all three copies and `.first()`
+ * returns whichever appears first in the DOM, which is a hidden one. That is
+ * how a dry run came back "ok" over a form with an empty name, phone and email:
+ * the locator resolved, the fill silently went nowhere visible, and nothing
+ * checked afterwards.
+ *
+ * So: walk the strategies in order, walk each match, and return the first that
+ * a person could actually see.
+ */
+async function visibleField(page: Page, selectors: string[]) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    const count = await locator.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+      const candidate = locator.nth(index);
+      if (await candidate.isVisible().catch(() => false)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
  * Fill and submit the contact form on one listing.
  *
  * `armed` is passed explicitly rather than read from config inside here, so the
@@ -116,26 +142,15 @@ export async function sendEnquiry(
       return { ok: false, error: 'Blocked by the site before the form could be reached.' };
     }
 
-    // The form sits in the right-hand rail. Locate by its own field labels
-    // rather than by class names, which are the site's to change.
-    const nameField = page
-      .locator('input[placeholder*="Full Name" i], input[name*="name" i]')
-      .first();
-    const emailField = page
-      .locator('input[type="email"], input[placeholder*="Email" i]')
-      .first();
-    const phoneField = page
-      .locator('input[type="tel"], input[placeholder*="Phone" i]')
-      .first();
-    const messageField = page
-      .locator('textarea, [placeholder*="Message" i]')
-      .first();
-    const submit = page
-      .getByRole('button', { name: /send message/i })
-      .first();
+    // Exact ids first — measured to be unique and visible — then a labelled
+    // fallback for pages whose ids differ. Each returns the first VISIBLE match.
+    const nameField = await visibleField(page, ['#txtName', 'input[placeholder="Full Name"]']);
+    const phoneField = await visibleField(page, ['#txtPhone', 'input[type="tel"]']);
+    const emailField = await visibleField(page, ['#txtEmail', 'input[type="email"]']);
+    const messageField = await visibleField(page, ['#txtMessage', 'textarea']);
+    const submit = page.getByRole('button', { name: /send message/i }).first();
 
-    if (!(await messageField.isVisible().catch(() => false))) {
-      // Some listings are sold or withdrawn and drop the form entirely.
+    if (!messageField || !nameField || !emailField) {
       const sold = await page
         .locator('text=/no longer available|has been sold|listing removed/i')
         .first()
@@ -143,42 +158,90 @@ export async function sendEnquiry(
         .catch(() => false);
       return {
         ok: false,
-        error: sold ? 'Listing is no longer available.' : 'Contact form not found on this listing.',
+        error: sold
+          ? 'Listing is no longer available.'
+          : `Contact form incomplete on this listing (name=${Boolean(nameField)}, ` +
+            `email=${Boolean(emailField)}, message=${Boolean(messageField)}).`,
         screenshot: await shot(page),
       };
     }
 
-    // Fill in the order a person would, with pauses between fields. The delays
-    // are not superstition: form-analytics timing is one of the cheaper bot
-    // signals, and a form completed in 40ms is conspicuous.
-    if (await nameField.isVisible().catch(() => false)) {
-      await nameField.fill(contact.fullName);
-      await humanPause(page);
-    }
-    if (await phoneField.isVisible().catch(() => false)) {
+    // Fill in the order a person would, with pauses. Form-analytics timing is a
+    // cheap bot signal and a form completed in 40ms is conspicuous.
+    await nameField.fill(contact.fullName);
+    await humanPause(page);
+    if (phoneField) {
       await phoneField.fill(contact.phone);
       await humanPause(page);
     }
-    if (await emailField.isVisible().catch(() => false)) {
-      await emailField.fill(contact.email);
-      await humanPause(page);
-    }
-
+    await emailField.fill(contact.email);
+    await humanPause(page);
     await messageField.fill(contact.message);
     await humanPause(page, 700, 1500);
 
-    // The newsletter opt-in is pre-ticked by the site. Leave the buyer opted
-    // out unless they have asked otherwise — this is their inbox.
-    const newsletter = page.locator('input[type="checkbox"]').first();
-    if (await newsletter.isChecked().catch(() => false)) {
-      await newsletter.uncheck().catch(() => {});
+    // Read every required field back before going near the button.
+    //
+    // This is the guard the earlier version lacked. All three are marked
+    // required by the site, and an enquiry reaching a broker with an empty name
+    // and no reply address is worse than one that never arrives — they cannot
+    // answer it, and it burns the relationship the whole system exists to build.
+    const written = {
+      name: await nameField.inputValue().catch(() => ''),
+      phone: phoneField ? await phoneField.inputValue().catch(() => '') : 'n/a',
+      email: await emailField.inputValue().catch(() => ''),
+      message: await messageField.inputValue().catch(() => ''),
+    };
+
+    const empty = Object.entries(written)
+      .filter(([, value]) => !value.trim())
+      .map(([field]) => field);
+
+    if (empty.length) {
+      return {
+        ok: false,
+        error:
+          `The form did not accept: ${empty.join(', ')}. Nothing was submitted — sending a broker ` +
+          `an enquiry with those blank is worse than not sending one.`,
+        screenshot: await shot(page),
+      };
     }
+
+    if (written.email !== contact.email || written.name !== contact.fullName) {
+      return {
+        ok: false,
+        error:
+          `Field mismatch — the page holds name "${written.name}" and email "${written.email}". ` +
+          `A different element was filled than the one intended. Not submitted.`,
+        screenshot: await shot(page),
+      };
+    }
+
+    // The newsletter opt-in is pre-ticked by the site. Leave the buyer opted
+    // out unless they ask otherwise — it is their inbox.
+    // The newsletter opt-in is pre-ticked by the site. Leave the buyer opted
+    // out unless they ask otherwise — it is their inbox, and nobody asked for it.
+    //
+    // The real <input> is visually replaced by a styled label, so `isVisible()`
+    // is false for it and `uncheck()` never lands. Untick it in the DOM and fire
+    // the events the framework listens for — the same approach the search
+    // filters needed, and for the same reason.
+    await page
+      .$$eval('input[type="checkbox"]', (boxes) => {
+        for (const box of boxes as any[]) {
+          const near = (box.closest('label') ?? box.parentElement)?.textContent ?? '';
+          // A real click toggles it and fires the framework's own handlers —
+          // no need to synthesise events the page may or may not listen for.
+          if (box.checked && /newsletter|send me|subscribe/i.test(near)) box.click();
+        }
+      })
+      .catch(() => {});
 
     if (!armed) {
       return {
         ok: true,
         confirmation:
-          'DRY RUN — form filled exactly as it would be sent, and left unsubmitted. Nothing was sent.',
+          `DRY RUN — form verified filled (name, phone, email, message all present) and left ` +
+          `unsubmitted. Nothing was sent.`,
         screenshot: await shot(page),
       };
     }
