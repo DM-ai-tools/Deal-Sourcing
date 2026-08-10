@@ -82,6 +82,14 @@
   .badge{font-size:11px;padding:3px 8px;border-radius:5px;font-weight:600;white-space:nowrap;
     background:var(--panel-2);border:1px solid var(--line-2);color:var(--ink-2)}
   .badge.email_sent{background:#12291a;color:#8ee79c;border-color:#2a5a30}
+  /* The two states that matter at a glance: amber = we messaged them,
+     green = they answered. Colour AND text, never colour alone. */
+  .flag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+    padding:3px 8px;border-radius:20px;white-space:nowrap;border:1px solid}
+  .flag.sent{background:#3a2f14;color:#f0cd7e;border-color:#6b5620}
+  .flag.replied{background:#12291a;color:#8ee79c;border-color:#2a5a30}
+  .flag.none{background:transparent;color:var(--ink-3);border-color:var(--line-2)}
+  .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
   .badge.deal_flow{background:#1e2f52;color:#a8c8ff;border-color:#31518f}
   .badge.rejected{background:#2a1618;color:#ffb4ae;border-color:#5c2a2a}
   select.status{padding:4px 8px;font-size:12px;width:auto;min-width:120px}
@@ -139,14 +147,17 @@
     <div class="row" style="margin-bottom:14px">
       <input id="q" placeholder="Search listings…" style="max-width:280px">
       <select id="statusFilter" style="max-width:190px"><option value="all">All statuses</option></select>
+      <span class="flag sent"><span class="dot"></span>Message sent</span>
+      <span class="flag replied"><span class="dot"></span>Responded</span>
       <div class="spacer"></div>
+      <button id="syncSheet">Sync to Google Sheet</button>
       <a href="/api/listings.csv"><button>Export CSV</button></a>
     </div>
     <div class="scroll">
       <table>
         <thead><tr>
-          <th>Listing</th><th class="num">Asking Price</th><th class="num">Gross Revenue</th>
-          <th class="num">Cash Flow (SDE)</th><th class="num">EBITDA</th><th>Status</th>
+          <th>Listing</th><th>Listed</th><th class="num">Asking Price</th><th class="num">Gross Revenue</th>
+          <th class="num">Cash Flow (SDE)</th><th class="num">EBITDA</th><th>Outreach</th><th>Status</th>
         </tr></thead>
         <tbody id="listings"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
       </table>
@@ -266,6 +277,31 @@
         <div><label>Email</label><input id="bbsEmail"></div>
         <div><label>Password <span class="muted" id="pwHint"></span></label><input id="bbsPassword" type="password" placeholder="leave blank to keep current"></div>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>Google Sheet</h3>
+      <div class="switch" style="margin-bottom:14px">
+        <input type="checkbox" id="sheetsEnabled">
+        <label for="sheetsEnabled" style="margin:0">
+          <b>Keep a Google Sheet up to date.</b> Rewritten after every run — vendors, whether a message
+          went out, whether they replied, what they said, and when each happened.
+        </label>
+      </div>
+      <div class="grid g2" style="margin-bottom:12px">
+        <div><label>Sheet ID <span class="muted">— the long id in the sheet URL</span></label>
+          <input id="sheetId" placeholder="1AbC...xyz"></div>
+        <div><label>Service account JSON <span class="muted" id="googleHint"></span></label>
+          <textarea id="googleCredentials" style="min-height:90px"
+            placeholder="paste the whole key file - leave blank to keep current"></textarea></div>
+      </div>
+      <p class="hint">
+        In Google Cloud create a <b>service account</b>, download its JSON key, then
+        <b>share the sheet with that account email as an Editor</b>. The sheet is a mirror:
+        it is rewritten on every sync, so change statuses here in the dashboard, not in the sheet.
+      </p>
+      <button id="testSheet">Test sheet connection</button>
+      <div id="sheetResult"></div>
     </div>
 
     <div class="card">

@@ -27,7 +27,27 @@ export interface ExtractedListing {
   established: string | null;
   brokerName: string | null;
   brokerPhone: string | null;
+  /** BizBuySell's own wording: "2 days ago", "Listed 12 Jul 2026". */
+  datePosted: string | null;
   isAuction: boolean;
+}
+
+/**
+ * When the listing went up.
+ *
+ * Kept as the site's own phrasing rather than normalised away. "3 days ago" is
+ * the most useful thing a strategist can read on a deal-sourcing screen, and
+ * converting it to a date at extraction time would freeze a relative phrase
+ * against the wrong clock the moment the row is re-read.
+ */
+export function extractDatePosted(text: string): string | null {
+  const relative = text.match(/(\d+\s+(?:hour|day|week|month)s?\s+ago|today|yesterday)/i);
+  if (relative?.[1]) return relative[1];
+
+  const labelled = text.match(
+    /(?:Date\s+)?(?:Listed|Posted|Added)(?:\s+on)?\s*:?\s*([A-Z][a-z]{2}\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+  );
+  return labelled?.[1]?.trim() ?? null;
 }
 
 /**
@@ -151,6 +171,7 @@ export function extractSearchResults(html: string): ExtractedListing[] {
       established: null,
       brokerName: null,
       brokerPhone: null,
+      datePosted: extractDatePosted(cardText),
       isAuction: looksLikeAuction(cardText),
     });
   }
@@ -219,6 +240,7 @@ export function extractListingDetail(html: string, url: string): Partial<Extract
     established: text.match(/Established:?\s*(\d{4}|Not\s*Disclosed)/i)?.[1] ?? null,
     brokerName: brokerName?.trim() ?? null,
     brokerPhone: phone,
+    datePosted: extractDatePosted(text),
     isAuction: looksLikeAuction(text),
   };
 }
@@ -251,6 +273,7 @@ export function mergeListing(
     established: pick('established'),
     brokerName: pick('brokerName'),
     brokerPhone: pick('brokerPhone'),
+    datePosted: pick('datePosted'),
     // An auction flag from either source is believed. Contacting an auction by
     // mistake is worse than skipping a listing that merely mentions the word.
     isAuction: base.isAuction || detail.isAuction === true,

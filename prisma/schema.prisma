@@ -113,6 +113,12 @@ model Listing {
   brokerName  String?
   brokerPhone String?
 
+  /// When BizBuySell says the listing was posted. Kept as the site's own text
+  /// ("2 days ago", "Listed 12 Jul") plus a parsed date where one is derivable —
+  /// a relative phrase is still useful to a human even when it will not sort.
+  datePosted     String?
+  datePostedAt   DateTime?
+
   isAuction Boolean @default(false)
 
   /// Pipeline state. Set to 'email_sent' once by the system and never touched
@@ -127,6 +133,10 @@ model Listing {
 
   firstSeenAt DateTime  @default(now())
   contactedAt DateTime?
+  /// Set when a broker replies. Drives the green indicator and the sheet.
+  respondedAt DateTime?
+  /// What they actually said, so the sheet can carry it without a mailbox.
+  responseNote String?
   updatedAt   DateTime  @updatedAt
 
   outreach Outreach[]
@@ -195,6 +205,17 @@ model Settings {
   proxyServer   String?
   proxyUsername String?
   proxyPassword String?
+
+  /// Google Sheet mirror. The sheet is a VIEW of the database, never the source
+  /// of truth — it is rewritten on every sync, so editing it does not feed back.
+  /// That direction is deliberate: two writable copies of the same pipeline is
+  /// how a status gets silently reverted.
+  sheetsEnabled       Boolean @default(false)
+  sheetId             String?
+  /// Service-account JSON, as downloaded from Google Cloud.
+  googleCredentials   String?
+  sheetsLastSyncedAt  DateTime?
+  sheetsLastError     String?
 
   updatedAt DateTime @updatedAt @default(now())
 }

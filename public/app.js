@@ -101,25 +101,43 @@ async function loadListings() {
 
     if (!listings.length) {
       $('listings').innerHTML =
-        '<tr><td colspan="6" class="empty">No listings yet. Save a search, then start a run.</td></tr>';
+        '<tr><td colspan="8" class="empty">No listings yet. Save a search, then start a run.</td></tr>';
       return;
     }
 
     $('listings').innerHTML = listings
       .map((l) => {
-        const failed = l.outreach?.[0]?.status === 'failed';
+        const failed = l.outreach?.some((o) => o.status === 'failed');
+        // Sent means an outreach row actually reached 'sent'. A dry run prepares
+        // messages without sending, and showing those as contacted would be the
+        // most misleading thing this table could do.
+        const sent = l.outreach?.some((o) => o.status === 'sent');
+        const replied = Boolean(l.respondedAt);
+        const outreachFlag = replied
+          ? `<span class="flag replied" title="Replied ${escape(when(l.respondedAt))}"><span class="dot"></span>Responded</span>`
+          : sent
+            ? `<span class="flag sent" title="Sent ${escape(when(l.contactedAt))}"><span class="dot"></span>Sent</span>`
+            : '<span class="flag none">Not contacted</span>';
         return `<tr>
           <td>
             <a href="${escape(l.url)}" target="_blank" rel="noreferrer">${escape(l.title)}</a>
             <div class="muted" style="font-size:12px">
               ${escape(l.location ?? '')}${l.brokerName ? ' · ' + escape(l.brokerName) : ''}
+              ${l.brokerPhone ? ' · ' + escape(l.brokerPhone) : ''}
               ${failed ? ' · <span style="color:var(--bad)">send failed</span>' : ''}
             </div>
+            ${l.responseNote ? `<div style="font-size:12px;color:#8ee79c;margin-top:4px">${escape(l.responseNote).slice(0, 140)}</div>` : ''}
           </td>
+          <td class="muted" style="font-size:12px;white-space:nowrap">${escape(l.datePosted ?? '-')}</td>
           <td class="num">${money(l.askingPrice)}</td>
           <td class="num">${money(l.grossRevenue)}</td>
           <td class="num">${money(l.cashFlow)}</td>
           <td class="num">${money(l.ebitda)}</td>
+          <td>
+            ${outreachFlag}
+            <button class="reply" data-id="${l.id}" title="Record their reply"
+              style="margin-top:5px;padding:3px 8px;font-size:11px">Log reply</button>
+          </td>
           <td>
             <select class="status" data-id="${l.id}">
               ${STATUSES.map(
@@ -145,9 +163,34 @@ async function loadListings() {
         }
       };
     });
+    document.querySelectorAll('button.reply').forEach((button) => {
+      button.onclick = async () => {
+        const note = prompt('What did they say? This shows in the tracker and the Google Sheet.');
+        if (note === null) return;
+        try {
+          await api(`/api/listings/${button.dataset.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ responded: true, responseNote: note }),
+          });
+          toast('Reply recorded');
+          loadListings();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+    });
   } catch (err) {
-    $('listings').innerHTML = `<tr><td colspan="6" class="empty">${escape(err.message)}</td></tr>`;
+    $('listings').innerHTML = `<tr><td colspan="8" class="empty">${escape(err.message)}</td></tr>`;
   }
+}
+
+/** Short, readable timestamp. */
+function when(value) {
+  return value
+    ? new Date(value).toLocaleString(undefined, {
+        day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+      })
+    : '';
 }
 
 $('q').oninput = debounce(loadListings, 350);
@@ -364,6 +407,9 @@ async function loadSettings() {
   $('minDelay').value = settings.minDelaySeconds;
   $('maxDelay').value = settings.maxDelaySeconds;
   $('transport').value = settings.transport;
+  $('sheetsEnabled').checked = Boolean(settings.sheetsEnabled);
+  $('sheetId').value = settings.sheetId ?? '';
+  $('googleHint').textContent = settings.hasGoogle ? '- saved' : '- not set';
   $('bbsEmail').value = settings.bizbuysellEmail ?? '';
   $('proxyServer').value = settings.proxyServer ?? '';
   $('proxyUsername').value = settings.proxyUsername ?? '';
@@ -414,12 +460,16 @@ $('saveSettings').onclick = async () => {
         transport: $('transport').value,
         bizbuysellEmail: $('bbsEmail').value || null,
         bizbuysellPassword: $('bbsPassword').value || null,
+        sheetsEnabled: $('sheetsEnabled').checked,
+        sheetId: $('sheetId').value || null,
+        googleCredentials: $('googleCredentials').value || null,
         proxyServer: $('proxyServer').value || null,
         proxyUsername: $('proxyUsername').value || null,
         proxyPassword: $('proxyPassword').value || null,
       }),
     });
     $('bbsPassword').value = '';
+    $('googleCredentials').value = '';
     $('proxyPassword').value = '';
     toast('Settings saved');
     loadSettings();
@@ -470,6 +520,30 @@ $('testAllModes').onclick = async () => {
     );
   } catch (err) {
     $('transportResult').innerHTML = banner('bad', 'Test failed', escape(err.message));
+  }
+};
+
+$('testSheet').onclick = async () => {
+  $('sheetResult').innerHTML = '<p class="muted" style="margin-top:12px">Checking...</p>';
+  try {
+    const { result } = await api('/api/sheets/test', { method: 'POST' });
+    $('sheetResult').innerHTML = banner(
+      result.ok ? 'good' : 'bad',
+      result.ok ? 'Sheet reachable' : 'Could not reach the sheet',
+      escape(result.error ?? ''),
+    );
+  } catch (err) {
+    $('sheetResult').innerHTML = banner('bad', 'Test failed', escape(err.message));
+  }
+};
+
+$('syncSheet').onclick = async () => {
+  toast('Syncing to Google Sheet...');
+  try {
+    const { result } = await api('/api/sheets/sync', { method: 'POST' });
+    toast(result.ok ? `Sheet updated - ${result.rows} rows` : `Sync failed: ${result.error}`);
+  } catch (err) {
+    toast(err.message);
   }
 };
 

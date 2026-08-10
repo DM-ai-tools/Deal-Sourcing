@@ -16,6 +16,7 @@ import { executeRun, stopRun, isRunning, reconcileOrphanedRuns } from './lib/run
 import { checkReachability, checkMode, type TransportConfig } from './lib/transport.js';
 import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/search-url.js';
 import { DEFAULT_MESSAGE, renderMessage } from './lib/outreach.js';
+import { syncToSheet, testSheet, type SheetRow } from './lib/sheets.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -121,6 +122,9 @@ const settingsSchema = z.object({
   proxyServer: z.string().max(300).nullable().optional(),
   proxyUsername: z.string().max(200).nullable().optional(),
   proxyPassword: z.string().max(200).nullable().optional(),
+  sheetsEnabled: z.boolean().optional(),
+  sheetId: z.string().max(200).nullable().optional(),
+  googleCredentials: z.string().max(20000).nullable().optional(),
 });
 
 app.get(
@@ -133,8 +137,10 @@ app.get(
         // Never send secrets back to the browser; report only whether they exist.
         bizbuysellPassword: undefined,
         proxyPassword: undefined,
+        googleCredentials: undefined,
         hasLogin: Boolean(settings.bizbuysellEmail && settings.bizbuysellPassword),
         hasProxy: Boolean(settings.proxyServer),
+        hasGoogle: Boolean(settings.googleCredentials && settings.sheetId),
       },
       sentToday: await countSentToday(),
     });
@@ -153,9 +159,17 @@ app.put(
     // the current secret, so an empty field is absence of input.
     if (!data.bizbuysellPassword) delete data.bizbuysellPassword;
     if (!data.proxyPassword) delete data.proxyPassword;
+    if (!data.googleCredentials) delete data.googleCredentials;
 
     const updated = await prisma.settings.update({ where: { id: 1 }, data });
-    ok(res, { settings: { ...updated, bizbuysellPassword: undefined, proxyPassword: undefined } });
+    ok(res, {
+      settings: {
+        ...updated,
+        bizbuysellPassword: undefined,
+        proxyPassword: undefined,
+        googleCredentials: undefined,
+      },
+    });
   }),
 );
 
@@ -217,6 +231,77 @@ app.post(
         : 'No mode returned data from here. The browser needs to run somewhere this site trusts, ' +
           'or behind residential proxies.',
     });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Google Sheet mirror
+// ---------------------------------------------------------------------------
+
+/** Every listing, shaped for the sheet. One query, no N+1. */
+async function sheetRows(): Promise<SheetRow[]> {
+  const listings = await prisma.listing.findMany({
+    orderBy: [{ contactedAt: 'desc' }, { firstSeenAt: 'desc' }],
+    include: { outreach: { select: { status: true, sentAt: true } } },
+  });
+
+  return listings.map((l) => {
+    const sent = l.outreach.find((o) => o.status === 'sent');
+    return {
+      title: l.title,
+      url: l.url,
+      location: l.location,
+      datePosted: l.datePosted,
+      askingPrice: l.askingPrice,
+      grossRevenue: l.grossRevenue,
+      cashFlow: l.cashFlow,
+      ebitda: l.ebitda,
+      brokerName: l.brokerName,
+      brokerPhone: l.brokerPhone,
+      // "Sent" means an outreach row reached 'sent'. A prepared-but-unsent dry
+      // run must never show as contacted — that is the difference between a
+      // rehearsal and a real message, and the sheet is where people will look.
+      messageSent: Boolean(sent),
+      sentAt: sent?.sentAt ?? l.contactedAt,
+      responded: Boolean(l.respondedAt),
+      respondedAt: l.respondedAt,
+      responseNote: l.responseNote,
+      status: l.status,
+      firstSeenAt: l.firstSeenAt,
+    };
+  });
+}
+
+app.post(
+  '/api/sheets/test',
+  handle(async (_req, res) => {
+    const settings = await getSettings();
+    if (!settings.googleCredentials || !settings.sheetId) {
+      return fail(res, 'Add the service-account JSON and the sheet ID first.');
+    }
+    ok(res, { result: await testSheet(settings.googleCredentials, settings.sheetId) });
+  }),
+);
+
+app.post(
+  '/api/sheets/sync',
+  handle(async (_req, res) => {
+    const settings = await getSettings();
+    if (!settings.googleCredentials || !settings.sheetId) {
+      return fail(res, 'Add the service-account JSON and the sheet ID first.');
+    }
+
+    const result = await syncToSheet(settings.googleCredentials, settings.sheetId, await sheetRows());
+
+    await prisma.settings.update({
+      where: { id: 1 },
+      data: {
+        sheetsLastSyncedAt: result.ok ? new Date() : settings.sheetsLastSyncedAt,
+        sheetsLastError: result.ok ? null : (result.error ?? 'unknown error'),
+      },
+    });
+
+    ok(res, { result });
   }),
 );
 
@@ -400,10 +485,26 @@ app.patch(
   '/api/listings/:id',
   handle(async (req, res) => {
     const body = z
-      .object({ status: z.enum(STATUSES).optional(), notes: z.string().max(4000).optional() })
+      .object({
+        status: z.enum(STATUSES).optional(),
+        notes: z.string().max(4000).optional(),
+        responseNote: z.string().max(8000).optional(),
+        responded: z.boolean().optional(),
+      })
       .safeParse(req.body);
     if (!body.success) return fail(res, 'Invalid update');
-    ok(res, { listing: await prisma.listing.update({ where: { id: param(req, 'id') }, data: body.data }) });
+
+    const { responded, ...fields } = body.data;
+    const data: Record<string, unknown> = { ...fields };
+
+    // Marking a reply is a timestamp, not just a flag — the sheet and the
+    // tracker both show WHEN, and a boolean would lose that.
+    if (responded === true) data.respondedAt = new Date();
+    if (responded === false) data.respondedAt = null;
+    // Recording what they said is itself evidence they replied.
+    if (fields.responseNote && responded === undefined) data.respondedAt = new Date();
+
+    ok(res, { listing: await prisma.listing.update({ where: { id: param(req, 'id') }, data }) });
   }),
 );
 
@@ -411,22 +512,40 @@ app.patch(
 app.get(
   '/api/listings.csv',
   handle(async (_req, res) => {
-    const listings = await prisma.listing.findMany({ orderBy: { firstSeenAt: 'desc' } });
+    const listings = await prisma.listing.findMany({
+      orderBy: { firstSeenAt: 'desc' },
+      include: { outreach: { select: { status: true, sentAt: true } } },
+    });
     const cell = (value: unknown) => {
       const text = value == null ? '' : String(value);
       return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     };
     const rows = [
-      ['Listing Name', 'Link', 'Asking Price', 'Gross Revenue', 'Cash Flow (SDE)', 'EBITDA', 'Status'],
-      ...listings.map((l) => [
-        l.title,
-        l.url,
-        l.askingPrice ?? '',
-        l.grossRevenue ?? '',
-        l.cashFlow ?? '',
-        l.ebitda ?? '',
-        l.status,
-      ]),
+      [
+        'Listing Name', 'Link', 'Date Listed', 'Asking Price', 'Gross Revenue',
+        'Cash Flow (SDE)', 'EBITDA', 'Broker', 'Broker Phone',
+        'Message Sent', 'Sent At', 'Responded', 'Responded At', 'Their Response', 'Status',
+      ],
+      ...listings.map((l) => {
+        const sent = l.outreach.find((o) => o.status === 'sent');
+        return [
+          l.title,
+          l.url,
+          l.datePosted ?? '',
+          l.askingPrice ?? '',
+          l.grossRevenue ?? '',
+          l.cashFlow ?? '',
+          l.ebitda ?? '',
+          l.brokerName ?? '',
+          l.brokerPhone ?? '',
+          sent ? 'YES' : 'NO',
+          sent?.sentAt ? new Date(sent.sentAt).toISOString().slice(0, 16).replace('T', ' ') : '',
+          l.respondedAt ? 'YES' : 'NO',
+          l.respondedAt ? new Date(l.respondedAt).toISOString().slice(0, 16).replace('T', ' ') : '',
+          l.responseNote ?? '',
+          l.status,
+        ];
+      }),
     ];
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="bizbuysell-tracker.csv"');

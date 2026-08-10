@@ -22,6 +22,7 @@ import {
   type ExtractedListing,
 } from './extract.js';
 import { login, sendEnquiry, sendDelayMs, renderMessage } from './outreach.js';
+import { syncToSheet } from './sheets.js';
 
 /** Result pages per starting URL. Twenty-five listings a page. */
 const MAX_PAGES_PER_URL = 20;
@@ -116,6 +117,7 @@ export async function executeRun(runId: string): Promise<void> {
             cashFlow: listing.cashFlow ?? existing.cashFlow,
             ebitda: listing.ebitda ?? existing.ebitda,
             brokerName: listing.brokerName ?? existing.brokerName,
+            datePosted: listing.datePosted ?? existing.datePosted,
           },
         });
         continue;
@@ -134,6 +136,7 @@ export async function executeRun(runId: string): Promise<void> {
           established: listing.established,
           brokerName: listing.brokerName,
           brokerPhone: listing.brokerPhone,
+          datePosted: listing.datePosted,
           isAuction: listing.isAuction,
           raw: listing as unknown as object,
         },
@@ -151,6 +154,9 @@ export async function executeRun(runId: string): Promise<void> {
     await prisma.run.update({ where: { id: runId }, data: { status: 'contacting' } });
     await contact(runId, run.dryRun, transportConfig, controller.signal);
 
+    // After contacting, so the sheet reflects what was actually sent.
+    await syncSheet(runId).catch(() => {});
+
     await finish(runId, controller.signal.aborted ? 'stopped' : 'done');
   } catch (err) {
     await log(runId, `Run failed: ${(err as Error).message}`, 'error');
@@ -158,6 +164,66 @@ export async function executeRun(runId: string): Promise<void> {
   } finally {
     running.delete(runId);
   }
+}
+
+/**
+ * Push the tracker to the Google Sheet.
+ *
+ * Best-effort by design: a run that found forty listings has done its job, and
+ * a Google API hiccup must not turn that into a failed run. The error is logged
+ * against the run and stored on Settings so the dashboard can show it.
+ */
+async function syncSheet(runId: string): Promise<void> {
+  const settings = await getSettings();
+  if (!settings.sheetsEnabled || !settings.googleCredentials || !settings.sheetId) return;
+
+  const listings = await prisma.listing.findMany({
+    orderBy: [{ contactedAt: 'desc' }, { firstSeenAt: 'desc' }],
+    include: { outreach: { select: { status: true, sentAt: true } } },
+  });
+
+  const result = await syncToSheet(
+    settings.googleCredentials,
+    settings.sheetId,
+    listings.map((l) => {
+      const sent = l.outreach.find((o) => o.status === 'sent');
+      return {
+        title: l.title,
+        url: l.url,
+        location: l.location,
+        datePosted: l.datePosted,
+        askingPrice: l.askingPrice,
+        grossRevenue: l.grossRevenue,
+        cashFlow: l.cashFlow,
+        ebitda: l.ebitda,
+        brokerName: l.brokerName,
+        brokerPhone: l.brokerPhone,
+        messageSent: Boolean(sent),
+        sentAt: sent?.sentAt ?? l.contactedAt,
+        responded: Boolean(l.respondedAt),
+        respondedAt: l.respondedAt,
+        responseNote: l.responseNote,
+        status: l.status,
+        firstSeenAt: l.firstSeenAt,
+      };
+    }),
+  );
+
+  await prisma.settings
+    .update({
+      where: { id: 1 },
+      data: {
+        sheetsLastSyncedAt: result.ok ? new Date() : undefined,
+        sheetsLastError: result.ok ? null : (result.error ?? 'unknown error'),
+      },
+    })
+    .catch(() => {});
+
+  await log(
+    runId,
+    result.ok ? `Google Sheet updated — ${result.rows} rows.` : `Google Sheet sync failed: ${result.error}`,
+    result.ok ? 'info' : 'warn',
+  );
 }
 
 async function finish(runId: string, status: string, error?: string) {
