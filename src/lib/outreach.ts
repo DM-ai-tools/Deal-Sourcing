@@ -16,7 +16,7 @@
  *     diagnosis and this page is not ours to guess about.
  */
 import type { Page } from 'patchright';
-import type { BrowserTransport } from './transport.js';
+import type { WritableTransport } from './transport.js';
 
 export interface ContactDetails {
   fullName: string;
@@ -42,7 +42,7 @@ export interface SendOutcome {
  * next send fails visibly rather than silently posting as an anonymous user.
  */
 export async function login(
-  transport: BrowserTransport,
+  transport: WritableTransport,
   credentials: { email: string; password: string },
 ): Promise<{ ok: boolean; error?: string }> {
   let page: Page | null = null;
@@ -99,7 +99,7 @@ export async function login(
  * exactly what a dry run should prove.
  */
 export async function sendEnquiry(
-  transport: BrowserTransport,
+  transport: WritableTransport,
   listingUrl: string,
   contact: ContactDetails,
   armed: boolean,

@@ -66,6 +66,21 @@ export interface Transport {
   close(): Promise<void>;
 }
 
+/**
+ * A transport that can hand out a live page for the outreach step to drive.
+ *
+ * This exists because the write path was hardcoded to Chrome. Reading honoured
+ * whichever mode was configured while sending always launched patchright — so
+ * on Railway, where Chrome is refused and Camoufox is not, every search
+ * succeeded and every send failed with a page.goto error. Forty-four of them,
+ * all attributed to the site rather than to us picking the wrong browser.
+ *
+ * Both browser transports satisfy this; Firecrawl does not, and says so.
+ */
+export interface WritableTransport extends Transport {
+  page(): Promise<Page>;
+}
+
 /** Akamai's refusal page is a 403 with a recognisable body. */
 export function looksBlocked(html: string | null, status?: number): boolean {
   if (status === 403 || status === 429) return true;
@@ -313,7 +328,7 @@ class BrowserTransport implements Transport {
   }
 }
 
-export type { BrowserTransport };
+export type { BrowserTransport, CamoufoxTransport };
 
 // ---------------------------------------------------------------------------
 // Camoufox — a Firefox fork with anti-detect patches compiled in
@@ -591,18 +606,57 @@ export function makeTransport(config: TransportConfig): Transport {
 }
 
 /** A browser-backed transport, for the paths that must write. */
-export function makeBrowserTransport(config: TransportConfig): BrowserTransport {
-  if (config.transport === 'proxy' && config.proxyServer) {
-    return new BrowserTransport({
-      kind: 'proxy',
-      proxy: {
+export function makeBrowserTransport(config: TransportConfig): WritableTransport {
+  const proxy = config.proxyServer
+    ? {
         server: config.proxyServer,
         username: config.proxyUsername ?? undefined,
         password: config.proxyPassword ?? undefined,
-      },
-    });
+      }
+    : undefined;
+
+  switch (config.transport) {
+    case 'camoufox':
+      return new CamoufoxTransport({ proxy });
+
+    case 'proxy':
+      if (proxy) return new BrowserTransport({ kind: 'proxy', proxy });
+      return new BrowserTransport({ kind: 'local' });
+
+    /**
+     * Firecrawl cannot fill a form, and `auto` is a read-side chain. Both fall
+     * back to a real browser — but which one matters, so prefer whichever the
+     * reachability check last found working rather than assuming Chrome.
+     */
+    case 'auto':
+    case 'firecrawl':
+    default:
+      return preferredWriteTransport(proxy);
   }
-  return new BrowserTransport({ kind: 'local' });
+}
+
+/**
+ * Remembered from the last successful reachability check.
+ *
+ * The write path cannot try three browsers per listing — each launch costs
+ * twenty seconds and the form is behind a page load. So it uses what was
+ * observed to work, and defaults to Camoufox on a server because that is what
+ * this deployment measured: Chrome from a datacentre IP is refused, Camoufox is
+ * not. On a machine where Chrome works, testing the mode updates this.
+ */
+let lastWorkingBrowser: 'local' | 'camoufox' | null = null;
+
+export function noteWorkingBrowser(kind: TransportKind): void {
+  if (kind === 'local' || kind === 'camoufox') lastWorkingBrowser = kind;
+}
+
+function preferredWriteTransport(
+  proxy?: { server: string; username?: string; password?: string },
+): WritableTransport {
+  const choice = lastWorkingBrowser ?? (env.defaultWriteBrowser as 'local' | 'camoufox');
+  return choice === 'camoufox'
+    ? new CamoufoxTransport({ proxy })
+    : new BrowserTransport({ kind: 'local', proxy });
 }
 
 /**
@@ -679,6 +733,8 @@ export async function checkMode(
     // Count listings, not status codes. A blocked client is served a complete,
     // valid-looking page with no data in it, so HTTP 200 proves nothing.
     const listings = (result.html.match(/href=["'][^"']*\/business-opportunity\/[^"']*\/\d+/gi) ?? []).length;
+
+    if (listings > 0) noteWorkingBrowser(mode);
 
     return listings > 0
       ? { mode, verdict: 'works', listings, seconds: seconds(), detail: `${listings} listings returned` }

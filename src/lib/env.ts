@@ -55,6 +55,16 @@ export const env = {
     return optional('PROFILE_DIR', path.join(os.tmpdir(), 'bizbuysell-profile'));
   },
 
+  /**
+   * Which browser the send path uses when the mode does not name one.
+   *
+   * Camoufox on a server, because that is what this deployment measured:
+   * Chrome from a datacentre IP is refused by Akamai and Camoufox is not.
+   */
+  get defaultWriteBrowser(): string {
+    return optional('DEFAULT_WRITE_BROWSER', 'camoufox');
+  },
+
   get nodeEnv(): string {
     return optional('NODE_ENV', 'development');
   },
