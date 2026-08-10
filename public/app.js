@@ -446,7 +446,7 @@ async function loadSettings() {
 
 $('saveSettings').onclick = async () => {
   try {
-    await api('/api/settings', {
+    const saved = await api('/api/settings', {
       method: 'PUT',
       body: JSON.stringify({
         fullName: $('fullName').value,
@@ -471,7 +471,14 @@ $('saveSettings').onclick = async () => {
     $('bbsPassword').value = '';
     $('googleCredentials').value = '';
     $('proxyPassword').value = '';
-    toast('Settings saved');
+    // Arming the switch starts a live run. Say so — someone who has just caused
+    // real messages to go to real brokers should not have to infer it from a
+    // progress bar appearing somewhere else on the page.
+    toast(
+      saved.startedRunId
+        ? 'Sending armed — a live run has started. Messages are going out now.'
+        : 'Settings saved',
+    );
     loadSettings();
   } catch (err) {
     toast(err.message);

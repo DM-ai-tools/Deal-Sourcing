@@ -153,7 +153,7 @@ app.put(
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) return fail(res, parsed.error.issues[0]?.message ?? 'Invalid settings');
 
-    await getSettings();
+    const before = await getSettings();
     const data = { ...parsed.data };
     // Blank means "leave it alone", not "erase it" — the form never receives
     // the current secret, so an empty field is absence of input.
@@ -162,6 +162,35 @@ app.put(
     if (!data.googleCredentials) delete data.googleCredentials;
 
     const updated = await prisma.settings.update({ where: { id: 1 }, data });
+
+    // Switching sending ON starts a live run, because that is what the switch
+    // is understood to mean. Arming a system that then waits to be told to go
+    // is the kind of gap where someone believes messages are going out for a
+    // week and they are not.
+    //
+    // Only on the false → true edge: saving an unrelated setting while sending
+    // is already on must not kick off a second run. And only when nothing is
+    // already running — the runs endpoint refuses concurrent runs for the same
+    // reason, and this must not be the way around that.
+    let started: { id: string } | null = null;
+    const justArmed = !before.sendingEnabled && updated.sendingEnabled;
+
+    if (justArmed) {
+      const active = await prisma.run.findFirst({
+        where: { status: { in: ['queued', 'discovering', 'contacting'] } },
+      });
+      const search = await prisma.search.findFirst({ orderBy: { createdAt: 'asc' } });
+
+      if (!active && search) {
+        started = await prisma.run.create({
+          data: { searchId: search.id, dryRun: false, transport: updated.transport },
+        });
+        // Not awaited: the switch should feel instant, and the run reports its
+        // own progress through the database.
+        void executeRun(started.id);
+      }
+    }
+
     ok(res, {
       settings: {
         ...updated,
@@ -169,6 +198,7 @@ app.put(
         proxyPassword: undefined,
         googleCredentials: undefined,
       },
+      startedRunId: started?.id ?? null,
     });
   }),
 );
