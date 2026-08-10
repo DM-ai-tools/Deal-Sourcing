@@ -13,9 +13,14 @@ import { z } from 'zod';
 import { env, envProblems } from './lib/env.js';
 import { prisma, probeDatabase, getSettings, countSentToday, ensureDefaultSearch } from './lib/db.js';
 import { executeRun, stopRun, isRunning, reconcileOrphanedRuns } from './lib/runner.js';
-import { checkReachability, checkMode, type TransportConfig } from './lib/transport.js';
+import {
+  checkReachability,
+  checkMode,
+  makeBrowserTransport,
+  type TransportConfig,
+} from './lib/transport.js';
 import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/search-url.js';
-import { DEFAULT_MESSAGE, renderMessage } from './lib/outreach.js';
+import { DEFAULT_MESSAGE, renderMessage, sendEnquiry } from './lib/outreach.js';
 import { syncToSheet, testSheet, type SheetRow } from './lib/sheets.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -223,6 +228,70 @@ app.post(
     const mode = asked.success && asked.data.mode ? asked.data.mode : config.transport;
 
     ok(res, { result: await checkReachability({ ...config, transport: mode }) });
+  }),
+);
+
+/**
+ * Prove the SEND path without sending anything.
+ *
+ * `test-transport` only proves the site can be READ. Reading and writing have
+ * failed independently here more than once: Chrome reads nothing from Railway
+ * while Camoufox reads fine, and the form fill was silently filling nothing
+ * long after reading worked perfectly. A green transport test has already
+ * coexisted with forty-four failed sends.
+ *
+ * So this drives the real `sendEnquiry` with `armed = false` over the transport
+ * that is actually configured: it navigates, finds the fields, fills them,
+ * reads them back, locates the submit control — and stops. Everything the real
+ * send does except press the button. If this reports ok, arming will work; if
+ * it does not, arming would have burned a listing to find out.
+ */
+app.post(
+  '/api/settings/test-send',
+  handle(async (req, res) => {
+    const settings = await getSettings();
+    const asked = z
+      .object({ url: z.string().url().optional() })
+      .safeParse(req.body ?? {});
+
+    // A specific listing if given, otherwise the next one a run would contact —
+    // so this tests the same page the real thing would hit next.
+    const listing = asked.success && asked.data.url
+      ? { url: asked.data.url, title: 'Test listing' }
+      : await prisma.listing.findFirst({
+          where: { status: 'new', isAuction: false, outreach: { none: {} } },
+          orderBy: { firstSeenAt: 'asc' },
+          select: { url: true, title: true },
+        });
+
+    if (!listing) return fail(res, 'No uncontacted listing to test against. Run a discovery first.');
+    if (!settings.fullName || !settings.email) {
+      return fail(res, 'Set a contact name and email in Settings first.');
+    }
+
+    const transport = makeBrowserTransport({
+      transport: settings.transport as TransportConfig['transport'],
+      proxyServer: settings.proxyServer,
+      proxyUsername: settings.proxyUsername,
+      proxyPassword: settings.proxyPassword,
+    });
+
+    try {
+      const outcome = await sendEnquiry(
+        transport,
+        listing.url,
+        {
+          fullName: settings.fullName,
+          email: settings.email,
+          phone: settings.phone,
+          message: renderMessage(settings.messageTemplate, listing),
+        },
+        false, // never armed — this endpoint cannot send, by construction
+      );
+      ok(res, { listing: listing.title, url: listing.url, mode: settings.transport, outcome });
+    } finally {
+      await transport.close().catch(() => {});
+    }
   }),
 );
 

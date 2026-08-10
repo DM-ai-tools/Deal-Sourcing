@@ -511,6 +511,31 @@ $('testTransport').onclick = async () => {
   }
 };
 
+// Reading and writing have failed independently here: a green transport test
+// coexisted with forty-four failed sends for days. This exercises the real send
+// path — navigate, fill, read back, locate the submit control — and stops.
+$('testSend').onclick = async () => {
+  $('transportResult').innerHTML =
+    '<p class="muted" style="margin-top:12px">Filling a real contact form… up to 90 seconds. ' +
+    'Nothing will be sent.</p>';
+  try {
+    const result = await api('/api/settings/test-send', { method: 'POST', body: '{}' });
+    const outcome = result.outcome;
+    $('transportResult').innerHTML = banner(
+      outcome.ok ? 'good' : 'bad',
+      outcome.ok ? 'The send path works — arming will send' : 'The send path is broken',
+      escape(outcome.confirmation || outcome.error || '') +
+        `<div class="muted" style="margin-top:8px">via <b>${escape(result.mode)}</b> on ` +
+        `${escape(result.listing)}</div>` +
+        (outcome.screenshot
+          ? `<img src="${outcome.screenshot}" style="margin-top:10px;max-width:100%;border-radius:8px">`
+          : ''),
+    );
+  } catch (err) {
+    $('transportResult').innerHTML = banner('bad', 'Send test failed', escape(err.message));
+  }
+};
+
 $('testAllModes').onclick = async () => {
   $('transportResult').innerHTML =
     '<p class="muted" style="margin-top:12px">Testing every mode in turn — this takes a few minutes. ' +

@@ -26,6 +26,16 @@ import { syncToSheet } from './sheets.js';
 
 /** Result pages per starting URL. Twenty-five listings a page. */
 const MAX_PAGES_PER_URL = 20;
+
+/**
+ * How many armed attempts one listing gets before it is left alone.
+ *
+ * High enough that a transient block or a slow render does not cost a deal,
+ * low enough that a listing whose form is genuinely broken cannot be retried
+ * every run forever — and low enough that if a crash ever does cause a repeat,
+ * a broker sees a handful of messages rather than an unbounded stream.
+ */
+const MAX_SEND_ATTEMPTS = 3;
 /** Politeness between reads. The site is not ours to hammer. */
 const READ_DELAY_MS = 1500;
 
@@ -357,11 +367,28 @@ async function contact(
     return;
   }
 
+  // Which listings are still worth contacting.
+  //
+  // This used to read `outreach: { none: {} }` — no outreach row at all. That
+  // is wrong, and it was silently fatal. A row is written BEFORE the send is
+  // attempted, so anything that touched a listing claimed it forever: a dry
+  // run, a failed attempt, a crash. After the forty-four sends that failed on
+  // the old form selectors, forty-four of forty-six listings had a 'failed' row
+  // and were therefore invisible to every future run. Arming the system would
+  // have found two listings, sent to them, and then gone quiet for good — with
+  // no error anywhere, because from the query's point of view there was simply
+  // nothing left to do.
+  //
+  // Only two things should retire a listing: a message that actually went out,
+  // or a retry budget spent. A failure is a reason to try again, not a
+  // tombstone.
   const pending = await prisma.listing.findMany({
     where: {
       status: 'new',
       isAuction: false,
-      outreach: { none: {} }, // the database's own guarantee, restated as a query
+      outreach: {
+        none: { OR: [{ status: 'sent' }, { attempts: { gte: MAX_SEND_ATTEMPTS } }] },
+      },
     },
     orderBy: { firstSeenAt: 'asc' },
   });
@@ -427,10 +454,16 @@ async function contact(
 
       const message = renderMessage(settings.messageTemplate, listing);
 
-      // Claim the listing first. If this insert loses a race, the other run
-      // owns it and this one moves on — which is the entire point of the
-      // unique constraint.
-      let claimed;
+      // Claim the listing before sending.
+      //
+      // `listingId` is unique, so there is at most one row per listing and
+      // claiming means either creating it or taking over one that exists but
+      // was never sent. The old code did the first and gave up on the second,
+      // which is how a single failed attempt became permanent.
+      //
+      // Attempts are only spent when actually armed. A dry run rehearses the
+      // whole path and must not eat into the retry budget for the real thing.
+      let claimed: { id: string } | null = null;
       try {
         claimed = await prisma.outreach.create({
           data: {
@@ -441,10 +474,40 @@ async function contact(
             fullName: settings.fullName,
             email: settings.email,
             phone: settings.phone,
+            attempts: armed ? 1 : 0,
           },
         });
       } catch {
-        continue; // already claimed
+        // A row already exists. Take it over — but only if it was never sent
+        // and still has budget. The status guard lives in the WHERE clause, so
+        // this is one conditional UPDATE and two writers cannot both win it.
+        //
+        // 'claimed' is included deliberately: a row left in that state means a
+        // previous run died mid-send, and it is genuinely unknown whether the
+        // message went out. Retrying risks a duplicate; not retrying
+        // guarantees the listing is never contacted again. The attempts cap
+        // bounds the first risk, and silence has already proved to be the
+        // costlier failure here.
+        const taken = await prisma.outreach.updateMany({
+          where: {
+            listingId: listing.id,
+            status: { in: ['prepared', 'failed', 'claimed'] },
+            attempts: { lt: MAX_SEND_ATTEMPTS },
+          },
+          data: {
+            status: 'claimed',
+            runId,
+            messageBody: message,
+            ...(armed ? { attempts: { increment: 1 } } : {}),
+          },
+        });
+        if (taken.count === 0) continue; // sent already, or out of retries
+
+        claimed = await prisma.outreach.findUnique({
+          where: { listingId: listing.id },
+          select: { id: true },
+        });
+        if (!claimed) continue;
       }
 
       const outcome = await sendEnquiry(
@@ -459,11 +522,14 @@ async function contact(
         armed,
       );
 
+      // `attempts` is not written here — it was already spent at claim time, and
+      // setting it to a literal 1 (as this used to) reset the counter on every
+      // pass, so the retry cap could never actually be reached.
       if (outcome.ok && armed) {
         sent++;
         await prisma.outreach.update({
           where: { id: claimed.id },
-          data: { status: 'sent', sentAt: new Date(), attempts: 1, confirmation: outcome.confirmation },
+          data: { status: 'sent', sentAt: new Date(), confirmation: outcome.confirmation },
         });
         await prisma.listing.update({
           where: { id: listing.id },
@@ -472,13 +538,13 @@ async function contact(
       } else if (outcome.ok) {
         await prisma.outreach.update({
           where: { id: claimed.id },
-          data: { status: 'prepared', attempts: 1, confirmation: outcome.confirmation, screenshot: outcome.screenshot },
+          data: { status: 'prepared', confirmation: outcome.confirmation, screenshot: outcome.screenshot },
         });
       } else {
         failed++;
         await prisma.outreach.update({
           where: { id: claimed.id },
-          data: { status: 'failed', attempts: 1, error: outcome.error, screenshot: outcome.screenshot },
+          data: { status: 'failed', error: outcome.error, screenshot: outcome.screenshot },
         });
         await log(runId, `${listing.title}: ${outcome.error}`, 'warn');
       }
