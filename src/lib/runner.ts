@@ -483,7 +483,15 @@ async function contact(
     for (const listing of batch) {
       if (signal.aborted) break;
 
-      // Re-read the master switch on every listing.
+      // One listing must never end the run.
+      //
+      // The persist loop had exactly this shape, and a single overflowing value
+      // killed an entire armed run three hours in, having contacted nobody.
+      // Everything below touches the network or the database, so any of it can
+      // throw — and when it does, the other forty-five listings are still worth
+      // sending to.
+      try {
+        // Re-read the master switch on every listing.
       //
       // `armed` used to be computed once, before the loop. That was survivable
       // when a human had to start a run deliberately, but arming now STARTS a
@@ -611,8 +619,16 @@ async function contact(
         .update({ where: { id: runId }, data: { messagesSent: sent, messagesFailed: failed } })
         .catch(() => {});
 
-      if (armed && !signal.aborted) {
-        await sleep(sendDelayMs(settings.minDelaySeconds, settings.maxDelaySeconds));
+        if (armed && !signal.aborted) {
+          await sleep(sendDelayMs(settings.minDelaySeconds, settings.maxDelaySeconds));
+        }
+      } catch (err) {
+        failed++;
+        await log(
+          runId,
+          `${listing.title}: ${(err as Error).message.split('\n')[0]?.slice(0, 160)}`,
+          'error',
+        );
       }
     }
   } finally {
