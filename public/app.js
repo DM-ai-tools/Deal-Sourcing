@@ -403,6 +403,8 @@ async function loadSettings() {
   $('phone').value = settings.phone ?? '';
   $('messageTemplate').value = settings.messageTemplate ?? '';
   $('sendingEnabled').checked = settings.sendingEnabled;
+  $('dailyScanEnabled').checked = settings.dailyScanEnabled;
+  $('scanHourUtc').value = settings.scanHourUtc;
   $('dailyCap').value = settings.dailyCap;
   $('minDelay').value = settings.minDelaySeconds;
   $('maxDelay').value = settings.maxDelaySeconds;
@@ -460,6 +462,8 @@ $('saveSettings').onclick = async () => {
         transport: $('transport').value,
         bizbuysellEmail: $('bbsEmail').value || null,
         bizbuysellPassword: $('bbsPassword').value || null,
+        dailyScanEnabled: $('dailyScanEnabled').checked,
+        scanHourUtc: Number($('scanHourUtc').value),
         sheetsEnabled: $('sheetsEnabled').checked,
         sheetId: $('sheetId').value || null,
         googleCredentials: $('googleCredentials').value || null,
@@ -511,6 +515,27 @@ $('testTransport').onclick = async () => {
     );
   } catch (err) {
     $('transportResult').innerHTML = banner('bad', 'Test failed', escape(err.message));
+  }
+};
+
+$('runScanNow').onclick = async () => {
+  $('scanResult').innerHTML = '<p class="muted" style="margin-top:10px">Starting…</p>';
+  try {
+    // force: this is the "run it now" button, so it skips the hour and the
+    // once-a-day guard. It cannot skip the already-running check.
+    const { outcome } = await api('/api/run-daily-scan', {
+      method: 'POST',
+      body: JSON.stringify({ force: true }),
+    });
+    const started = outcome.startsWith('Daily scan started');
+    $('scanResult').innerHTML = banner(
+      started ? 'good' : 'warn',
+      started ? 'Scan started' : 'Not started',
+      escape(outcome),
+    );
+    loadRuns && loadRuns();
+  } catch (err) {
+    $('scanResult').innerHTML = banner('bad', 'Could not start', escape(err.message));
   }
 };
 

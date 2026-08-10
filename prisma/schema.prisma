@@ -217,5 +217,16 @@ model Settings {
   sheetsLastSyncedAt  DateTime?
   sheetsLastError     String?
 
+  /// One scan per day, unattended.
+  ///
+  /// Without this the system only runs when somebody clicks something, so
+  /// "check BizBuySell daily" quietly becomes "check it when anyone remembers"
+  /// — and a business in this band is under offer within days. 14:00 UTC is
+  /// mid-morning across the US business day, so an enquiry arrives while the
+  /// broker is at their desk rather than at three in the morning.
+  dailyScanEnabled Boolean   @default(true)
+  scanHourUtc      Int       @default(14)
+  lastScheduledAt  DateTime?
+
   updatedAt DateTime @updatedAt @default(now())
 }

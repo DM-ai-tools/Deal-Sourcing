@@ -1,0 +1,105 @@
+/**
+ * One scan per day, without anyone having to remember.
+ *
+ * Everything else in this system waits to be told: a run starts when someone
+ * clicks Start, or when the send toggle is armed. That is fine for testing and
+ * wrong for the actual job, which is to notice a business the day it is listed.
+ * A listing with $750k–$1M of cash flow does not sit unclaimed for a week.
+ *
+ * The design constraint that shapes this file: **the container restarts.**
+ * Railway redeploys, crashes and scales, and each restart re-runs boot code. So
+ * "have we already scanned today?" cannot live in memory — it is answered by
+ * asking the database what runs exist since midnight. Ten restarts in an hour
+ * produce one run, not ten, and that property is what makes an unattended
+ * sender safe to leave switched on.
+ */
+import { prisma, getSettings } from './db.js';
+import { executeRun } from './runner.js';
+
+/** How often to look. Well below an hour, so the scan hour is never missed. */
+const CHECK_INTERVAL_MS = 15 * 60 * 1000;
+
+/** Midnight UTC today. The day boundary is fixed rather than local so it does
+ *  not shift under the container, which has no timezone configured. */
+function startOfUtcDay(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/**
+ * Start today's run, if today's run has not already happened.
+ *
+ * Exported so it can be triggered by hand and tested, and so the reason for
+ * skipping is always a string someone can read rather than silence.
+ */
+export async function maybeRunDailyScan(force = false): Promise<string> {
+  const settings = await getSettings();
+
+  if (!force && !settings.dailyScanEnabled) return 'Daily scan is switched off.';
+
+  if (!force && new Date().getUTCHours() < settings.scanHourUtc) {
+    return `Waiting for ${String(settings.scanHourUtc).padStart(2, '0')}:00 UTC.`;
+  }
+
+  // Never two at once. A scan that overlaps the previous one would contend for
+  // the same browser profile and double the load on a site that is already
+  // rate-limiting us.
+  const active = await prisma.run.findFirst({
+    where: { status: { in: ['queued', 'discovering', 'contacting'] } },
+    select: { id: true },
+  });
+  if (active) return 'A run is already in progress.';
+
+  // The real idempotency guard, and the reason this is a database question and
+  // not a variable: restarts re-run boot code, and a redeploy at 14:05 must not
+  // start a second scan on top of the one that began at 14:00.
+  const since = startOfUtcDay();
+  if (!force) {
+    const alreadyToday = await prisma.run.findFirst({
+      where: { startedAt: { gte: since } },
+      select: { id: true },
+    });
+    if (alreadyToday) return 'Already scanned today.';
+  }
+
+  const search = await prisma.search.findFirst({ orderBy: { updatedAt: 'desc' } });
+  if (!search) return 'No search is configured.';
+
+  // Dry unless sending is armed. The scan is worth running either way — it
+  // keeps the tracker current — but the master switch alone decides whether a
+  // message leaves the building.
+  const dryRun = !settings.sendingEnabled;
+
+  const run = await prisma.run.create({
+    data: { searchId: search.id, dryRun, transport: settings.transport },
+  });
+  await prisma.settings.update({ where: { id: 1 }, data: { lastScheduledAt: new Date() } });
+
+  void executeRun(run.id);
+
+  return dryRun
+    ? `Daily scan started (dry run — sending is off). Run ${run.id}.`
+    : `Daily scan started and armed. Run ${run.id}.`;
+}
+
+/**
+ * Begin checking. Safe to call once at boot.
+ *
+ * `unref()` so a pending timer never holds the process open during shutdown —
+ * a container that will not exit gets killed, and a kill mid-send is exactly
+ * the state that leaves a claimed listing in limbo.
+ */
+export function startScheduler(): void {
+  const tick = () => {
+    maybeRunDailyScan()
+      .then((outcome) => {
+        // Only say something when something happened. A line every fifteen
+        // minutes saying "waiting" buries the logs that matter.
+        if (outcome.startsWith('Daily scan started')) console.log(`[scheduler] ${outcome}`);
+      })
+      .catch((err) => console.error('[scheduler]', (err as Error).message));
+  };
+
+  setTimeout(tick, 60_000).unref(); // let boot settle before the first check
+  setInterval(tick, CHECK_INTERVAL_MS).unref();
+}

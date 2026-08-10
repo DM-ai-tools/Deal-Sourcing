@@ -305,6 +305,27 @@
     </div>
 
     <div class="card">
+      <h3>Daily scan</h3>
+      <div class="grid g2" style="margin-bottom:10px">
+        <div>
+          <label><input type="checkbox" id="dailyScanEnabled"> Scan once a day, on its own</label>
+        </div>
+        <div>
+          <label>Hour (UTC, 0–23)</label>
+          <input id="scanHourUtc" type="number" min="0" max="23">
+        </div>
+      </div>
+      <p class="hint">
+        One scan per day across the whole buy-box. If sending is armed, that scan also
+        messages everything new it finds, paced and capped. 14:00 UTC is mid-morning in the
+        US, so enquiries land while brokers are at their desks. The once-a-day guard is
+        checked against the database, not memory — a redeploy cannot cause a second scan.
+      </p>
+      <button id="runScanNow">Run a scan now</button>
+      <div id="scanResult"></div>
+    </div>
+
+    <div class="card">
       <h3>Transport — how the system reaches BizBuySell</h3>
       <div class="grid g2" style="margin-bottom:14px">
         <div>

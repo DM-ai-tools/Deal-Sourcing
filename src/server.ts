@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { env, envProblems } from './lib/env.js';
 import { prisma, probeDatabase, getSettings, countSentToday, ensureDefaultSearch } from './lib/db.js';
 import { executeRun, stopRun, isRunning, reconcileOrphanedRuns } from './lib/runner.js';
+import { startScheduler, maybeRunDailyScan } from './lib/scheduler.js';
 import {
   checkReachability,
   checkMode,
@@ -130,6 +131,8 @@ const settingsSchema = z.object({
   sheetsEnabled: z.boolean().optional(),
   sheetId: z.string().max(200).nullable().optional(),
   googleCredentials: z.string().max(20000).nullable().optional(),
+  dailyScanEnabled: z.boolean().optional(),
+  scanHourUtc: z.number().int().min(0).max(23).optional(),
 });
 
 app.get(
@@ -238,6 +241,21 @@ app.post(
     const mode = asked.success && asked.data.mode ? asked.data.mode : config.transport;
 
     ok(res, { result: await checkReachability({ ...config, transport: mode }) });
+  }),
+);
+
+/**
+ * Run today's scan now, rather than waiting for the hour.
+ *
+ * `force` skips the hour check and the once-a-day guard, which is what "run it
+ * now" has to mean — but not the already-in-progress check, because two
+ * concurrent runs would fight over the same browser profile.
+ */
+app.post(
+  '/api/run-daily-scan',
+  handle(async (req, res) => {
+    const force = z.object({ force: z.boolean().default(false) }).safeParse(req.body ?? {});
+    ok(res, { outcome: await maybeRunDailyScan(force.success && force.data.force) });
   }),
 );
 
@@ -768,5 +786,18 @@ app.listen(port, '0.0.0.0', async () => {
 
   const orphans = await reconcileOrphanedRuns().catch(() => 0);
   if (orphans) console.log(`  recovered   ${orphans} run(s) interrupted by a restart`);
+
+  // Start it unconditionally. Whether a scan actually happens is decided inside,
+  // against the database, so restarts cannot produce duplicate runs.
+  startScheduler();
+  const settings = await getSettings().catch(() => null);
+  console.log(
+    `  schedule    ${
+      settings?.dailyScanEnabled
+        ? `daily at ${String(settings.scanHourUtc).padStart(2, '0')}:00 UTC` +
+          `${settings.sendingEnabled ? ' — ARMED, messages will send' : ' (dry, sending is off)'}`
+        : 'off'
+    }`,
+  );
   console.log('─'.repeat(64));
 });
