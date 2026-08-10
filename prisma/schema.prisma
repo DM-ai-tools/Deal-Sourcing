@@ -228,5 +228,14 @@ model Settings {
   scanHourUtc      Int       @default(14)
   lastScheduledAt  DateTime?
 
+  /// Which saved search the scheduler and the arming switch actually run.
+  ///
+  /// This was inferred from timestamps and both guesses were wrong in turn.
+  /// "Oldest" ran a search the operator had replaced; "most recently updated"
+  /// ran a fifty-state duplicate created minutes earlier, which turned twelve
+  /// URLs into six hundred and failed for three hours without contacting
+  /// anyone. Which buy-box is live is a decision, not something to derive.
+  activeSearchId String?
+
   updatedAt DateTime @updatedAt @default(now())
 }

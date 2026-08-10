@@ -405,6 +405,7 @@ async function loadSettings() {
   $('sendingEnabled').checked = settings.sendingEnabled;
   $('dailyScanEnabled').checked = settings.dailyScanEnabled;
   $('scanHourUtc').value = settings.scanHourUtc;
+  await fillSearchPicker(settings.activeSearchId);
   $('dailyCap').value = settings.dailyCap;
   $('minDelay').value = settings.minDelaySeconds;
   $('maxDelay').value = settings.maxDelaySeconds;
@@ -463,6 +464,7 @@ $('saveSettings').onclick = async () => {
         bizbuysellEmail: $('bbsEmail').value || null,
         bizbuysellPassword: $('bbsPassword').value || null,
         dailyScanEnabled: $('dailyScanEnabled').checked,
+        activeSearchId: $('activeSearchId').value || null,
         scanHourUtc: Number($('scanHourUtc').value),
         sheetsEnabled: $('sheetsEnabled').checked,
         sheetId: $('sheetId').value || null,
@@ -517,6 +519,29 @@ $('testTransport').onclick = async () => {
     $('transportResult').innerHTML = banner('bad', 'Test failed', escape(err.message));
   }
 };
+
+// Show which buy-box is armed, and how many requests it costs. A fifty-state
+// search reads identically to a national one in every other view, and the
+// difference is 600 requests against 12 — which is the difference between a
+// scan that finishes and one the site cuts off.
+async function fillSearchPicker(activeId) {
+  try {
+    const { searches } = await api('/api/searches');
+    const select = $('activeSearchId');
+    select.innerHTML = searches
+      .map((s) => {
+        const states = (s.states || []).length;
+        const urls = (states || 1) * (s.industries || []).length;
+        const scope = states ? `${states} states` : 'national — all states';
+        return `<option value="${s.id}">${escape(s.name)} — ${scope}, ` +
+          `${(s.industries || []).length} industries (${urls} requests)</option>`;
+      })
+      .join('');
+    if (activeId) select.value = activeId;
+  } catch {
+    /* the picker is a convenience; settings must still load without it */
+  }
+}
 
 $('runScanNow').onclick = async () => {
   $('scanResult').innerHTML = '<p class="muted" style="margin-top:10px">Starting…</p>';

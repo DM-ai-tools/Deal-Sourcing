@@ -114,45 +114,28 @@ export async function executeRun(runId: string): Promise<void> {
     }
 
     // ---- persist ----------------------------------------------------------
+    //
+    // One unwritable listing must not take the run with it. A single value that
+    // overflowed a column threw here, unwrapped, and the whole run died — three
+    // hours of crawling discarded, nothing contacted, and the cause buried in a
+    // Prisma stack trace on the run record. A bad row is a bad row: log it,
+    // skip it, keep the other forty-five.
     let created = 0;
+    let skipped = 0;
     for (const listing of discovered) {
-      const existing = await prisma.listing.findUnique({ where: { listingId: listing.listingId } });
-      if (existing) {
-        // Refresh the figures — an asking price can drop — but never the status.
-        await prisma.listing.update({
-          where: { id: existing.id },
-          data: {
-            askingPrice: listing.askingPrice ?? existing.askingPrice,
-            grossRevenue: listing.grossRevenue ?? existing.grossRevenue,
-            cashFlow: listing.cashFlow ?? existing.cashFlow,
-            ebitda: listing.ebitda ?? existing.ebitda,
-            brokerName: listing.brokerName ?? existing.brokerName,
-            datePosted: listing.datePosted ?? existing.datePosted,
-          },
-        });
-        continue;
+      try {
+        created += await persistListing(listing, run.searchId);
+      } catch (err) {
+        skipped++;
+        await log(
+          runId,
+          `Could not save "${listing.title}" — ${(err as Error).message.split('\n').pop()?.slice(0, 160)}`,
+          'warn',
+        );
       }
-      await prisma.listing.create({
-        data: {
-          listingId: listing.listingId,
-          searchId: run.searchId,
-          title: listing.title,
-          url: listing.url,
-          location: listing.location,
-          askingPrice: listing.askingPrice,
-          grossRevenue: listing.grossRevenue,
-          cashFlow: listing.cashFlow,
-          ebitda: listing.ebitda,
-          established: listing.established,
-          brokerName: listing.brokerName,
-          brokerPhone: listing.brokerPhone,
-          datePosted: listing.datePosted,
-          isAuction: listing.isAuction,
-          raw: listing as unknown as object,
-        },
-      });
-      created++;
     }
+
+    if (skipped) await log(runId, `${skipped} listing(s) could not be saved and were skipped.`, 'warn');
 
     await prisma.run.update({
       where: { id: runId },
@@ -174,6 +157,48 @@ export async function executeRun(runId: string): Promise<void> {
   } finally {
     running.delete(runId);
   }
+}
+
+/** Write one listing. Returns 1 if it was new, 0 if it already existed. */
+async function persistListing(listing: ExtractedListing, searchId: string): Promise<number> {
+  const existing = await prisma.listing.findUnique({ where: { listingId: listing.listingId } });
+
+  if (existing) {
+    // Refresh the figures — an asking price can drop — but never the status.
+    await prisma.listing.update({
+      where: { id: existing.id },
+      data: {
+        askingPrice: listing.askingPrice ?? existing.askingPrice,
+        grossRevenue: listing.grossRevenue ?? existing.grossRevenue,
+        cashFlow: listing.cashFlow ?? existing.cashFlow,
+        ebitda: listing.ebitda ?? existing.ebitda,
+        brokerName: listing.brokerName ?? existing.brokerName,
+        datePosted: listing.datePosted ?? existing.datePosted,
+      },
+    });
+    return 0;
+  }
+
+  await prisma.listing.create({
+    data: {
+      listingId: listing.listingId,
+      searchId,
+      title: listing.title,
+      url: listing.url,
+      location: listing.location,
+      askingPrice: listing.askingPrice,
+      grossRevenue: listing.grossRevenue,
+      cashFlow: listing.cashFlow,
+      ebitda: listing.ebitda,
+      established: listing.established,
+      brokerName: listing.brokerName,
+      brokerPhone: listing.brokerPhone,
+      datePosted: listing.datePosted,
+      isAuction: listing.isAuction,
+      raw: listing as unknown as object,
+    },
+  });
+  return 1;
 }
 
 /**
@@ -282,6 +307,12 @@ async function discover(
               result.blocked ? 'error' : 'warn',
             );
           }
+          // Record the attempt even though it failed. This used to update only
+          // on the success path, so a run whose pages were all being refused
+          // sat with a frozen counter and looked identical to one making steady
+          // progress — which is exactly how a stalled run was read as healthy
+          // for eighty minutes.
+          await prisma.run.update({ where: { id: runId }, data: { pagesRead } }).catch(() => {});
           break;
         }
 

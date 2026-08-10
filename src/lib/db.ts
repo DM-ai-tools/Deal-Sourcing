@@ -100,6 +100,26 @@ export async function ensureDefaultSearch() {
   });
 }
 
+/**
+ * The search the scheduler and the arming switch actually run.
+ *
+ * One place, so those two callers cannot drift apart and start running
+ * different buy-boxes — a difference nobody would notice until the wrong
+ * businesses were being contacted. `activeSearchId` is the operator's choice;
+ * the fallback exists only so a fresh install works before anyone makes one.
+ */
+export async function resolveActiveSearch() {
+  const settings = await getSettings();
+
+  if (settings.activeSearchId) {
+    const chosen = await prisma.search.findUnique({ where: { id: settings.activeSearchId } });
+    // A deleted search must not silently become "no search at all".
+    if (chosen) return chosen;
+  }
+
+  return prisma.search.findFirst({ orderBy: { updatedAt: 'desc' } });
+}
+
 export async function countSentToday(): Promise<number> {
   const since = new Date();
   since.setHours(0, 0, 0, 0);

@@ -13,7 +13,7 @@
  * produce one run, not ten, and that property is what makes an unattended
  * sender safe to leave switched on.
  */
-import { prisma, getSettings } from './db.js';
+import { prisma, getSettings, resolveActiveSearch } from './db.js';
 import { executeRun } from './runner.js';
 
 /** How often to look. Well below an hour, so the scan hour is never missed. */
@@ -62,7 +62,7 @@ export async function maybeRunDailyScan(force = false): Promise<string> {
     if (alreadyToday) return 'Already scanned today.';
   }
 
-  const search = await prisma.search.findFirst({ orderBy: { updatedAt: 'desc' } });
+  const search = await resolveActiveSearch();
   if (!search) return 'No search is configured.';
 
   // Dry unless sending is armed. The scan is worth running either way — it

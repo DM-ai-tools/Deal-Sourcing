@@ -55,6 +55,13 @@ check('plain dollars', parseMoney('$1,440,000') === 1440000);
 check('no dollar sign', parseMoney('530000') === 530000);
 check('with suffix', parseMoney('$2.2M') === 2200000);
 check('thousands suffix', parseMoney('$750K') === 750000);
+// The bug that killed a live armed run three hours in, having sent nothing: the
+// B of "Building" was read as billions, giving 868,512,000,000,000, which
+// overflowed the INT4 column and threw out of the persist loop.
+check('a following word is not a unit', parseMoney('$868,512 Building SF') === 868512);
+check('Motel is not a unit either', parseMoney('$2,500,000 Motel') === 2500000);
+check('a real suffix still works with trailing text', parseMoney('$2.2M asking') === 2200000);
+check('magnitudes past the column are null, not overflow', parseMoney('$9,000,000,000,000') === null);
 // The single most important null in the system: EBITDA is undisclosed on most
 // listings, and a zero there would read as "no earnings" rather than "not said".
 check('Not Disclosed is null, never zero', parseMoney('Not Disclosed') === null);

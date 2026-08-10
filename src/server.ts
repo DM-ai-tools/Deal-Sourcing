@@ -11,7 +11,14 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import { env, envProblems } from './lib/env.js';
-import { prisma, probeDatabase, getSettings, countSentToday, ensureDefaultSearch } from './lib/db.js';
+import {
+  prisma,
+  probeDatabase,
+  getSettings,
+  countSentToday,
+  ensureDefaultSearch,
+  resolveActiveSearch,
+} from './lib/db.js';
 import { executeRun, stopRun, isRunning, reconcileOrphanedRuns } from './lib/runner.js';
 import { startScheduler, maybeRunDailyScan } from './lib/scheduler.js';
 import {
@@ -133,6 +140,7 @@ const settingsSchema = z.object({
   googleCredentials: z.string().max(20000).nullable().optional(),
   dailyScanEnabled: z.boolean().optional(),
   scanHourUtc: z.number().int().min(0).max(23).optional(),
+  activeSearchId: z.string().max(60).nullable().optional(),
 });
 
 app.get(
@@ -188,11 +196,9 @@ app.put(
       const active = await prisma.run.findFirst({
         where: { status: { in: ['queued', 'discovering', 'contacting'] } },
       });
-      // Most recently updated, not oldest. `createdAt: 'asc'` pinned this to
-      // whichever search happened to be created first — so editing the buy-box
-      // by adding a new search would arm the OLD one, and the operator would be
-      // messaging against filters they thought they had replaced.
-      const search = await prisma.search.findFirst({ orderBy: { updatedAt: 'desc' } });
+      // The search the operator chose, not one inferred from a timestamp.
+      // Both guesses were wrong in turn — see resolveActiveSearch().
+      const search = await resolveActiveSearch();
 
       if (active) {
         armingNote = 'Sending is on, but a run is already in progress — it will send as it goes.';

@@ -62,7 +62,13 @@ export function parseMoney(input: string | null | undefined): number | null {
   const text = input.trim();
   if (/not\s*disclosed|n\/?a|undisclosed|—|^-$/i.test(text)) return null;
 
-  const match = text.replace(/,/g, '').match(/\$?\s*([\d.]+)\s*([kmb])?/i);
+  // The unit has to stand alone.
+  //
+  // `([kmb])?` with nothing after it read the B of "Building" as billions, so
+  // "$868,512 Building SF" parsed to 868,512,000,000,000. That overflowed the
+  // 32-bit column and killed an entire armed run three hours in, having sent
+  // nothing. A suffix only counts when no letter follows it.
+  const match = text.replace(/,/g, '').match(/\$?\s*([\d.]+)\s*([kmb])?(?![a-z])/i);
   if (!match?.[1]) return null;
 
   const value = Number(match[1]);
@@ -70,7 +76,15 @@ export function parseMoney(input: string | null | undefined): number | null {
 
   const suffix = match[2]?.toLowerCase();
   const multiplier = suffix === 'b' ? 1e9 : suffix === 'm' ? 1e6 : suffix === 'k' ? 1e3 : 1;
-  return Math.round(value * multiplier);
+  const amount = Math.round(value * multiplier);
+
+  // Past the column's range it is a parse error, not a business. These are
+  // INT4 columns, so the ceiling is ~$2.1bn — far above anything in a
+  // $750k–$1m cash-flow band, and far below what a mis-parse produces.
+  // Returning null costs one uncertain field; letting it through costs the run.
+  if (amount < 0 || amount > 2_147_483_647) return null;
+
+  return amount;
 }
 
 const stripTags = (html: string) =>
