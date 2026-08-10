@@ -148,7 +148,6 @@ export async function sendEnquiry(
     const phoneField = await visibleField(page, ['#txtPhone', 'input[type="tel"]']);
     const emailField = await visibleField(page, ['#txtEmail', 'input[type="email"]']);
     const messageField = await visibleField(page, ['#txtMessage', 'textarea']);
-    const submit = page.getByRole('button', { name: /send message/i }).first();
 
     if (!messageField || !nameField || !emailField) {
       const sold = await page
@@ -246,6 +245,40 @@ export async function sendEnquiry(
       };
     }
 
+    // The submit control is not a <button> and not an <input type="submit"> —
+    // a dump of every visible form control on the page contains neither. It is
+    // styled markup, so find it the same way as the fields: first visible match
+    // across several strategies, widest last.
+    const submit = await visibleField(page, [
+      '#btnSubmit',
+      '#btnSendMessage',
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Send Message")',
+      'a:has-text("Send Message")',
+      '[class*="submit" i]:has-text("Send")',
+      ':is(button, a, div, span)[role="button"]:has-text("Send")',
+      ':is(button, a):has-text("Send")',
+    ]);
+
+    if (!submit) {
+      // Say what was actually there. "Button not found" sends whoever reads it
+      // back to the browser to look; the markup answers it in the log.
+      const around = await page
+        .$eval('#txtMessage', (element) => {
+          const node = element as any;
+          const form = node.closest('form') ?? node.parentElement?.parentElement;
+          return ((form?.outerHTML ?? '(no form found)') as string).replace(/\s+/g, ' ').slice(-700);
+        })
+        .catch(() => '(could not read the form)');
+      return {
+        ok: false,
+        error: `Form filled but no submit control matched. Nothing sent. Form tail: ${around}`,
+        screenshot: await shot(page),
+      };
+    }
+
+    await submit.scrollIntoViewIfNeeded().catch(() => {});
     await submit.click();
     await page.waitForTimeout(5000);
 

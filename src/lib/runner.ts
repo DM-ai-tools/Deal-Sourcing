@@ -396,20 +396,30 @@ async function contact(
   let failed = 0;
 
   try {
-    if (armed) {
-      if (!settings.bizbuysellEmail || !settings.bizbuysellPassword) {
-        await log(runId, 'Sending is armed but no BizBuySell login is configured.', 'error');
-        return;
-      }
+    // Signing in is an optimisation, not a requirement.
+    //
+    // A real enquiry was accepted while signed out — the site replied "Your
+    // message has been sent to Gregory Kovsky" — which makes sense, because the
+    // form asks for a name, phone and email precisely so anonymous buyers can
+    // use it. Meanwhile the login page is more heavily defended than the
+    // listing pages and frequently refuses to render its form at all.
+    //
+    // Treating login as mandatory therefore meant the one step that reliably
+    // fails could veto every step that reliably works: a whole armed run would
+    // abort having sent nothing. Try it, because a signed-in session may still
+    // help with rate limits and attribution — but never let it stop the send.
+    if (armed && settings.bizbuysellEmail && settings.bizbuysellPassword) {
       const auth = await login(transport, {
         email: settings.bizbuysellEmail,
         password: settings.bizbuysellPassword,
       });
-      if (!auth.ok) {
-        await log(runId, `Could not sign in: ${auth.error}`, 'error');
-        return;
-      }
-      await log(runId, 'Signed in.');
+      await log(
+        runId,
+        auth.ok
+          ? 'Signed in.'
+          : `Could not sign in (${auth.error}) — sending anyway, which the site accepts.`,
+        auth.ok ? 'info' : 'warn',
+      );
     }
 
     for (const listing of batch) {
