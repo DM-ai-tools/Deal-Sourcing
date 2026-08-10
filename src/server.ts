@@ -178,15 +178,24 @@ app.put(
     // already running — the runs endpoint refuses concurrent runs for the same
     // reason, and this must not be the way around that.
     let started: { id: string } | null = null;
+    let armingNote: string | null = null;
     const justArmed = !before.sendingEnabled && updated.sendingEnabled;
 
     if (justArmed) {
       const active = await prisma.run.findFirst({
         where: { status: { in: ['queued', 'discovering', 'contacting'] } },
       });
-      const search = await prisma.search.findFirst({ orderBy: { createdAt: 'asc' } });
+      // Most recently updated, not oldest. `createdAt: 'asc'` pinned this to
+      // whichever search happened to be created first — so editing the buy-box
+      // by adding a new search would arm the OLD one, and the operator would be
+      // messaging against filters they thought they had replaced.
+      const search = await prisma.search.findFirst({ orderBy: { updatedAt: 'desc' } });
 
-      if (!active && search) {
+      if (active) {
+        armingNote = 'Sending is on, but a run is already in progress — it will send as it goes.';
+      } else if (!search) {
+        armingNote = 'Sending is on, but there is no search configured, so there is nothing to run.';
+      } else {
         started = await prisma.run.create({
           data: { searchId: search.id, dryRun: false, transport: updated.transport },
         });
@@ -204,6 +213,7 @@ app.put(
         googleCredentials: undefined,
       },
       startedRunId: started?.id ?? null,
+      armingNote,
     });
   }),
 );
@@ -258,8 +268,14 @@ app.post(
     // so this tests the same page the real thing would hit next.
     const listing = asked.success && asked.data.url
       ? { url: asked.data.url, title: 'Test listing' }
-      : await prisma.listing.findFirst({
-          where: { status: 'new', isAuction: false, outreach: { none: {} } },
+      : // Same predicate the runner uses, so this tests the page the real run
+        // would hit next — not a listing it would never reach.
+        await prisma.listing.findFirst({
+          where: {
+            status: 'new',
+            isAuction: false,
+            outreach: { none: { OR: [{ status: 'sent' }, { attempts: { gte: 3 } }] } },
+          },
           orderBy: { firstSeenAt: 'asc' },
           select: { url: true, title: true },
         });
@@ -621,11 +637,28 @@ async function buildTrackerCsv(): Promise<string> {
     include: { outreach: { select: { status: true, sentAt: true } } },
   });
   const cell = (value: unknown) => {
-    const text = value == null ? '' : String(value);
-    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    let text = value == null ? '' : String(value);
+
+    // Neutralise formulas before quoting.
+    //
+    // This CSV is imported straight into Google Sheets, and two of its columns
+    // are free text written by other people — the listing title, and whatever a
+    // broker replied. A value starting =, +, - or @ is evaluated as a FORMULA
+    // on import, so a reply beginning "=..." stops being text and starts being
+    // code running inside the buyer's deal tracker. A leading apostrophe is the
+    // spreadsheet's own way of saying "this is literal".
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+
+    // \r as well as \n: RFC 4180 requires quoting for carriage returns too, and
+    // a bare \r splits one row into two in both Excel and Sheets.
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
+  // Marked UTC, because it is. Stripping the 'Z' and saying nothing left the
+  // buyer — who is in the US — reading a contact time five to eight hours off
+  // with no way to tell, which matters when deciding whether a broker has had
+  // time to reply.
   const stamp = (value: Date | null | undefined) =>
-    value ? new Date(value).toISOString().slice(0, 16).replace('T', ' ') : '';
+    value ? `${new Date(value).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
 
   const rows = [
     [

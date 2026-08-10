@@ -452,6 +452,23 @@ async function contact(
     for (const listing of batch) {
       if (signal.aborted) break;
 
+      // Re-read the master switch on every listing.
+      //
+      // `armed` used to be computed once, before the loop. That was survivable
+      // when a human had to start a run deliberately, but arming now STARTS a
+      // run — so the switch reads as "start sending" and, to anyone who has
+      // just watched it do that, equally as "stop sending". It has to mean
+      // both. A toggle that begins messaging strangers and then cannot call
+      // them back is the wrong shape for the one control that matters, and the
+      // moment someone wants it off is exactly the moment it must work.
+      if (armed) {
+        const now = await getSettings();
+        if (!now.sendingEnabled) {
+          await log(runId, 'Sending was switched off — stopping after ' + sent + ' sent.', 'warn');
+          break;
+        }
+      }
+
       const message = renderMessage(settings.messageTemplate, listing);
 
       // Claim the listing before sending.
@@ -477,7 +494,17 @@ async function contact(
             attempts: armed ? 1 : 0,
           },
         });
-      } catch {
+      } catch (err) {
+        // Only a unique-constraint collision means "someone already has this".
+        // Any other database error was being read as that and skipped in
+        // silence, so a connection drop or a schema mismatch would look
+        // exactly like an orderly run with nothing left to do.
+        const code = (err as { code?: string }).code;
+        if (code && code !== 'P2002') {
+          await log(runId, `Could not claim ${listing.title}: ${code}`, 'error');
+          continue;
+        }
+
         // A row already exists. Take it over — but only if it was never sent
         // and still has budget. The status guard lives in the WHERE clause, so
         // this is one conditional UPDATE and two writers cannot both win it.

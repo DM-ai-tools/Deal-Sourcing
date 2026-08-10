@@ -142,6 +142,35 @@ export async function sendEnquiry(
       return { ok: false, error: 'Blocked by the site before the form could be reached.' };
     }
 
+    // Wait for the form to exist before looking for its fields.
+    //
+    // The right-hand rail hydrates well after the page body, and it is not
+    // consistent: one probe load never rendered the form within 45 seconds
+    // while the next rendered it in three. A fixed sleep turns that variance
+    // into "this listing has no contact form", which is a lie that costs a
+    // deal — the listing is fine, we simply looked too early.
+    const formAppeared = await page
+      .waitForSelector('#txtMessage, textarea', { state: 'attached', timeout: 40_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!formAppeared) {
+      const sold = await page
+        .locator('text=/no longer available|has been sold|listing removed/i')
+        .first()
+        .isVisible()
+        .catch(() => false);
+      return {
+        ok: false,
+        error: sold
+          ? 'Listing is no longer available.'
+          : 'The contact form never rendered — the page loaded but the rail did not. Worth retrying.',
+        screenshot: await shot(page),
+      };
+    }
+    // Let the fields finish wiring up now that the form itself is there.
+    await page.waitForTimeout(1200);
+
     // Exact ids first — measured to be unique and visible — then a labelled
     // fallback for pages whose ids differ. Each returns the first VISIBLE match.
     const nameField = await visibleField(page, ['#txtName', 'input[placeholder="Full Name"]']);
@@ -278,12 +307,27 @@ export async function sendEnquiry(
       };
     }
 
+    // Snapshot the page before clicking, so success means the confirmation
+    // APPEARED rather than merely being present. A listing page that already
+    // says "thank you" anywhere — a testimonial, a footer, a cookie notice —
+    // would otherwise be read as proof of a send that never happened, and a
+    // false "sent" is the one error that can never be recovered: the listing is
+    // retired, nobody is contacted, and the tracker says the job is done.
+    const CONFIRMATION = /thank you|your message has been sent|we've sent|request sent|has been submitted/i;
+    const before = await page.locator('body').innerText().catch(() => '');
+    const alreadySaidIt = CONFIRMATION.test(before);
+
     await submit.scrollIntoViewIfNeeded().catch(() => {});
     await submit.click();
     await page.waitForTimeout(5000);
 
     const body = await page.locator('body').innerText().catch(() => '');
-    const confirmed = /thank you|your message has been sent|we've sent|request sent|has been submitted/i.test(body);
+    const confirmed = alreadySaidIt
+      ? // The phrase was already on the page, so its presence proves nothing.
+        // Fall back to the stronger signal: the form is gone or emptied, which
+        // is what this site does on a successful submit.
+        !(await messageField.inputValue().catch(() => '')).trim()
+      : CONFIRMATION.test(body);
 
     if (!confirmed) {
       return {

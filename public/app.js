@@ -477,7 +477,10 @@ $('saveSettings').onclick = async () => {
     toast(
       saved.startedRunId
         ? 'Sending armed — a live run has started. Messages are going out now.'
-        : 'Settings saved',
+        : // An arming attempt that started nothing must say why. Reporting
+          // "Settings saved" while nothing happened is how someone waits a week
+          // for messages that were never going to be sent.
+          saved.armingNote || 'Settings saved',
     );
     loadSettings();
   } catch (err) {
