@@ -600,6 +600,16 @@ app.get(
   }),
 );
 
+/**
+ * An unknown API route is an error, not the dashboard.
+ *
+ * Without this, `/api/anything` returns the SPA shell with a 200 — so a typo in
+ * a fetch looks like success, and Google Sheets pointed at a mistyped CSV URL
+ * would quietly import an HTML page instead of the tracker and show a sheet
+ * full of nonsense rather than an error.
+ */
+app.use('/api', (_req, res) => res.status(404).json({ ok: false, error: 'No such endpoint.' }));
+
 app.get('*', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 
 // ---------------------------------------------------------------------------
