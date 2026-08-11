@@ -234,21 +234,37 @@ async function readNewMessagesOverImap(
   try {
     await client.mailboxOpen('INBOX', { readOnly: true });
 
-    // UID is the better watermark where it exists, so IMAP keeps using it.
-    const range = settings.inboxLastUid > 0 ? `${settings.inboxLastUid + 1}:*` : '1:*';
+    // Ask the server which messages are recent instead of downloading the
+    // mailbox to find out.
+    //
+    // This used to fetch `1:*` with the full source of every message and then
+    // discard anything older than the watermark. Against the real mailbox that
+    // is 1,559 messages pulled over the wire, every five minutes, to find the
+    // handful that matter — slow, and a good way to be rate-limited by a
+    // provider for no reason. SEARCH does the filtering server-side and returns
+    // only ids.
+    const recent = await client.search({ since }, { uid: true });
+    const wanted = (recent || []).filter((uid) => uid > settings.inboxLastUid);
+    if (!wanted.length) return [];
 
-    for await (const message of client.fetch(range, { uid: true, source: true }, { uid: true })) {
-      // `n:*` always returns at least one message even when none are newer —
-      // the server clamps to the last UID — so skip anything already seen
-      // rather than reprocessing the newest message on every poll.
-      if (message.uid <= settings.inboxLastUid) continue;
+    for await (const message of client.fetch(
+      wanted.join(','),
+      { uid: true, source: true },
+      { uid: true },
+    )) {
       if (!message.source) continue;
 
       const parsed: ParsedMail = await simpleParser(message.source);
-      if (parsed.date && parsed.date < since && !settings.inboxLastUid) continue;
 
       const headers = new Map<string, string>();
       for (const [name, value] of parsed.headers) headers.set(name.toLowerCase(), String(value));
+
+      const addressesOf = (field: unknown): string[] => {
+        const value = field as { value?: { address?: string }[] } | undefined;
+        return (value?.value ?? [])
+          .map((entry) => entry.address?.toLowerCase())
+          .filter((address): address is string => Boolean(address));
+      };
 
       messages.push({
         messageId: parsed.messageId ?? `uid-${message.uid}@${settings.inboxUser}`,
@@ -258,6 +274,13 @@ async function readNewMessagesOverImap(
         body: parsed.text ?? '',
         receivedAt: parsed.date ?? new Date(),
         headers,
+        // Delivered-To carries the forwarding hop, which the To header does
+        // not — a forwarded reply still says To: deals@hyperboards.com.
+        toEmails: [
+          ...addressesOf(parsed.to),
+          ...addressesOf(parsed.cc),
+          ...(headers.get('delivered-to') ?? '').toLowerCase().split(/[,\s]+/).filter(Boolean),
+        ],
         uid: message.uid,
       });
     }
@@ -266,6 +289,35 @@ async function readNewMessagesOverImap(
   }
 
   return messages;
+}
+
+/**
+ * Is this message one of ours to read?
+ *
+ * The mailbox being monitored is not necessarily dedicated to this system. The
+ * one in use carries 1,559 messages of ordinary business correspondence, and
+ * broker replies arrive in it only because deals@hyperboards.com forwards them.
+ * Ingesting everything would put unrelated mail — clients, invoices, newsletters
+ * — into a deal database and onto a Replies screen where it does not belong.
+ *
+ * A forwarded reply is still addressed to the buyer's address, so that is the
+ * discriminator: keep what was sent to us, ignore the mailbox owner's own mail.
+ * With no filter configured, everything is read, which is the right default for
+ * a mailbox that really is dedicated.
+ */
+function addressedToUs(message: RawMessage, filterTo: string | null): boolean {
+  if (!filterTo) return true;
+  const needle = filterTo.toLowerCase().trim();
+  if (!needle) return true;
+
+  if (message.toEmails.some((address) => address.includes(needle))) return true;
+
+  // Some forwarders rewrite the envelope and leave the original only in the
+  // headers, so fall back to the raw header text before discarding a reply.
+  for (const name of ['delivered-to', 'x-forwarded-to', 'x-original-to', 'to', 'cc']) {
+    if ((message.headers.get(name) ?? '').toLowerCase().includes(needle)) return true;
+  }
+  return false;
 }
 
 /**
@@ -291,10 +343,21 @@ export async function checkInbox(): Promise<InboxCheck> {
     const messages = await readNewMessages(settings);
 
     let matched = 0;
+    let skipped = 0;
     let watermark = settings.inboxWatermark;
     let highestUid = settings.inboxLastUid;
 
     for (const message of messages) {
+      // Advance the watermark for every message seen, including ones we do
+      // not keep — otherwise unrelated mail is re-examined on every poll.
+      if (!watermark || message.receivedAt > watermark) watermark = message.receivedAt;
+      if (message.uid && message.uid > highestUid) highestUid = message.uid;
+
+      if (!addressedToUs(message, settings.inboxFilterTo)) {
+        skipped++;
+        continue;
+      }
+
       const isAutoReply = looksAutomatic(message.headers, message.subject);
       const isBounce = looksLikeBounce(message.fromEmail, message.subject, message.headers);
       const { listing, matchedBy } = matchReply(
@@ -340,10 +403,6 @@ export async function checkInbox(): Promise<InboxCheck> {
         });
       }
 
-      // Advance per message, not per poll: a crash halfway through resumes here
-      // rather than skipping everything before the newest message.
-      if (!watermark || message.receivedAt > watermark) watermark = message.receivedAt;
-      if (message.uid && message.uid > highestUid) highestUid = message.uid;
     }
 
     await prisma.settings.update({
@@ -359,7 +418,9 @@ export async function checkInbox(): Promise<InboxCheck> {
     return {
       ok: true,
       detail: messages.length
-        ? `Read ${messages.length} new message(s); ${matched} matched to a listing.`
+        ? `Read ${messages.length} new message(s)` +
+          `${skipped ? `, ignored ${skipped} not addressed to us` : ''}` +
+          `; ${matched} matched to a listing.`
         : 'No new messages.',
       found: messages.length,
       matched,

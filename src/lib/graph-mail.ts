@@ -33,6 +33,9 @@ export interface RawMessage {
   body: string;
   receivedAt: Date;
   headers: Map<string, string>;
+  /// Everyone the message was addressed to, lower-cased. Used to tell a
+  /// forwarded broker reply apart from the mailbox owner's own mail.
+  toEmails: string[];
 }
 
 interface TokenCache {
@@ -147,7 +150,8 @@ export async function graphFetchSince(
 
   const query = new URLSearchParams({
     $filter: `receivedDateTime gt ${since.toISOString()}`,
-    $select: 'id,internetMessageId,from,subject,body,bodyPreview,receivedDateTime,internetMessageHeaders',
+    $select:
+      'id,internetMessageId,from,toRecipients,ccRecipients,subject,body,bodyPreview,receivedDateTime,internetMessageHeaders',
     $orderby: 'receivedDateTime asc',
     $top: String(limit),
   });
@@ -174,6 +178,8 @@ interface GraphMessage {
   id: string;
   internetMessageId?: string;
   from?: { emailAddress?: { address?: string; name?: string } };
+  toRecipients?: { emailAddress?: { address?: string } }[];
+  ccRecipients?: { emailAddress?: { address?: string } }[];
   subject?: string;
   body?: { contentType?: string; content?: string };
   bodyPreview?: string;
@@ -215,5 +221,8 @@ function toRawMessage(message: GraphMessage): RawMessage {
     body,
     receivedAt: message.receivedDateTime ? new Date(message.receivedDateTime) : new Date(),
     headers,
+    toEmails: [...(message.toRecipients ?? []), ...(message.ccRecipients ?? [])]
+      .map((r) => r.emailAddress?.address?.toLowerCase())
+      .filter((address): address is string => Boolean(address)),
   };
 }

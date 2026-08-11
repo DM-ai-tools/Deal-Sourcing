@@ -148,6 +148,7 @@ const settingsSchema = z.object({
   inboxUser: z.string().max(200).nullable().optional(),
   inboxPassword: z.string().max(300).nullable().optional(),
   inboxProvider: z.enum(['imap', 'graph']).optional(),
+  inboxFilterTo: z.string().max(200).nullable().optional(),
   graphTenantId: z.string().max(100).nullable().optional(),
   graphClientId: z.string().max(100).nullable().optional(),
   graphClientSecret: z.string().max(300).nullable().optional(),

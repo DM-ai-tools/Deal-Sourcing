@@ -411,6 +411,7 @@ async function loadSettings() {
   $('graphClientId').value = settings.graphClientId ?? '';
   showInboxFields();
   $('inboxUser').value = settings.inboxUser ?? '';
+  $('inboxFilterTo').value = settings.inboxFilterTo ?? '';
   $('inboxHost').value = settings.inboxHost ?? '';
   $('inboxPort').value = settings.inboxPort ?? 993;
   $('dailyScanEnabled').checked = settings.dailyScanEnabled;
@@ -479,6 +480,7 @@ $('saveSettings').onclick = async () => {
         graphClientId: $('graphClientId').value || null,
         graphClientSecret: $('graphClientSecret').value || null,
         inboxUser: $('inboxUser').value || null,
+        inboxFilterTo: $('inboxFilterTo').value || null,
         inboxHost: $('inboxHost').value || null,
         inboxPort: Number($('inboxPort').value) || 993,
         inboxPassword: $('inboxPassword').value || null,

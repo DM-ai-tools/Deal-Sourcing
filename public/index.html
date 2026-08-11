@@ -325,6 +325,9 @@
         <div><label>Mailbox address</label><input id="inboxUser" placeholder="deals@hyperboards.com"></div>
         <div><label>Password</label><input id="inboxPassword" type="password"
               placeholder="leave blank to keep current"></div>
+        <div><label>Only read mail addressed to</label><input id="inboxFilterTo"
+              placeholder="deals@hyperboards.com — blank reads everything"></div>
+        <div></div>
       </div>
       <div class="grid g2" style="margin-bottom:10px">
         <div>
@@ -360,6 +363,10 @@
         as read, and tracks its place by message number. A matched reply turns the listing
         green and copies what they said into the tracker and the sheet. Out-of-office replies
         and bounces are recorded but never counted as an answer.
+        <br><br>
+        <b>If you are forwarding into a mailbox you also use for other things</b>, set
+        “Only read mail addressed to” to the address the brokers reply to — otherwise every
+        message in that inbox is stored in the deal database and shown under Replies.
       </p>
       <button id="testInbox">Test connection</button>
       <button id="checkInbox">Check for replies now</button>

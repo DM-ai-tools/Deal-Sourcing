@@ -302,6 +302,14 @@ model Settings {
   /// Highest UID already ingested, so a restart resumes instead of re-reading
   /// the whole mailbox — and so a reply is never processed twice.
   inboxLastUid    Int       @default(0)
+  /// Only ingest mail addressed to this, when set.
+  ///
+  /// The monitored mailbox is not necessarily dedicated to this system — the
+  /// one in use carries over a thousand messages of ordinary business
+  /// correspondence, and broker replies land in it only because
+  /// deals@hyperboards.com forwards them. Without this, a client invoice ends
+  /// up stored in a deal database and displayed on a Replies screen.
+  inboxFilterTo   String?
   inboxLastCheckedAt DateTime?
   inboxLastError  String?
 
