@@ -51,7 +51,11 @@ async function main() {
       target.url,
       {
         fullName: 'Sai Sushant Reddy Allu',
-        email: 'deals@hyperboards.com',
+        // Overridable, because the reply address is a live question: Microsoft
+        // 365 blocks forwarding out of deals@hyperboards.com, so replies have
+        // to be steered somewhere readable instead — and whether this form
+        // accepts a plus-address decides how.
+        email: process.env.BUYER_EMAIL ?? 'deals@hyperboards.com',
         phone: '(857) 366-7779',
         message: 'PROBE ONLY — this form was filled and deliberately not submitted.',
       },
