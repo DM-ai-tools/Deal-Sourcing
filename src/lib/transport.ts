@@ -185,12 +185,47 @@ const PROFILE_LOCK = { held: false as boolean, waiters: [] as (() => void)[] };
  * from the settings page at any moment, including halfway through a run — this
  * serialises them rather than letting the second one crash.
  */
+const PROFILE_WAIT_MS = 3 * 60 * 1000;
+
 async function acquireProfile(): Promise<() => void> {
   if (PROFILE_LOCK.held) {
-    await new Promise<void>((resolve) => PROFILE_LOCK.waiters.push(resolve));
+    // Wait, but never forever.
+    //
+    // This used to park on a promise that nothing was obliged to resolve. If a
+    // holder ever failed to release — a browser that threw on launch, a close()
+    // that ran twice and corrupted the queue — the next caller blocked for the
+    // life of the process with no error, no log and no timeout. That is exactly
+    // how an armed run reached "Sending to 60 listings" and then sat there for
+    // twenty minutes with zero sent AND zero failed: the send loop was not
+    // failing, it was waiting on a lock nobody still owned.
+    //
+    // Failing loudly after three minutes turns a permanent silent wedge into
+    // one legible error on one listing, which the retry budget then covers.
+    let timer: NodeJS.Timeout | undefined;
+    const waiter = new Promise<void>((resolve) => PROFILE_LOCK.waiters.push(resolve));
+    const expiry = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error('Timed out waiting for the browser profile — another task still holds it.')),
+        PROFILE_WAIT_MS,
+      );
+    });
+
+    try {
+      await Promise.race([waiter, expiry]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
   PROFILE_LOCK.held = true;
+
+  // Releasing twice used to shift a second waiter off the queue and hand the
+  // profile to two owners at once — two Chromes on one user-data-dir, which is
+  // the crash this lock exists to prevent. Now the second call does nothing.
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     const next = PROFILE_LOCK.waiters.shift();
     if (next) next();
     else PROFILE_LOCK.held = false;
@@ -228,26 +263,40 @@ class BrowserTransport implements Transport {
 
     this.release = await acquireProfile();
 
-    // patchright's documented optimal configuration, unmodified. Persistent
-    // context matters twice over: it is what the project recommends, and it is
-    // where Akamai's cookies accumulate across runs. On Railway this path must
-    // be a mounted Volume or every deploy starts cold.
-    this.context = await chromium.launchPersistentContext(env.profileDir, {
-      channel: 'chrome',
-      headless: false,
-      viewport: null,
-      args: [
-        // Required when running as root in a container.
-        '--no-sandbox',
-        // Railway exposes no --shm-size control, so this stays even though
-        // patchright would prefer an untouched flag set. Knowing trade-off.
-        '--disable-dev-shm-usage',
-      ],
-      ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
-    });
+    // Everything after acquiring the lock has to hand it back on the way out.
+    //
+    // It did not before: if Chrome failed to launch, or the warm-up threw, the
+    // exception escaped with the lock still held and nothing left holding a
+    // reference to the release function. The profile was then unusable for the
+    // life of the process — and the next caller waited on it in silence.
+    try {
+      // patchright's documented optimal configuration, unmodified. Persistent
+      // context matters twice over: it is what the project recommends, and it is
+      // where Akamai's cookies accumulate across runs. On Railway this path must
+      // be a mounted Volume or every deploy starts cold.
+      this.context = await chromium.launchPersistentContext(env.profileDir, {
+        channel: 'chrome',
+        headless: false,
+        viewport: null,
+        args: [
+          // Required when running as root in a container.
+          '--no-sandbox',
+          // Railway exposes no --shm-size control, so this stays even though
+          // patchright would prefer an untouched flag set. Knowing trade-off.
+          '--disable-dev-shm-usage',
+        ],
+        ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
+      });
 
-    await this.warmUp();
-    return this.context;
+      await this.warmUp();
+      return this.context;
+    } catch (err) {
+      await this.context?.close().catch(() => {});
+      this.context = null;
+      this.release?.();
+      this.release = null;
+      throw err;
+    }
   }
 
   /**
