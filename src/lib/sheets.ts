@@ -323,6 +323,31 @@ export async function createSheet(
   const account = parseCredentials(credentialsJson);
   const token = await accessToken(account);
 
+  // Check the one thing that actually decides this, before making a call whose
+  // failure says nothing useful.
+  //
+  // Google removed Drive storage from service accounts: `limit: "0"` means the
+  // account cannot OWN a file, so spreadsheets.create returns a bare
+  // "The caller does not have permission" — which reads like a misconfigured
+  // key or a disabled API and is neither. The fix is not more permissions; it
+  // is to stop trying to create and start writing into a sheet a real person
+  // owns. Say so, because nobody is deducing that from a 403.
+  const about = await fetch(
+    'https://www.googleapis.com/drive/v3/about?fields=storageQuota',
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+    .then((r) => (r.ok ? (r.json() as Promise<{ storageQuota?: { limit?: string } }>) : null))
+    .catch(() => null);
+
+  if (about?.storageQuota?.limit === '0') {
+    throw new Error(
+      'This service account has no Drive storage, so Google will not let it create a file — ' +
+        'a limitation of service accounts, not a misconfiguration. Create one empty Google Sheet ' +
+        `yourself, share it with ${account.client_email} as an Editor, and paste its ID into ` +
+        'Settings. Filling and updating it stays fully automatic after that.',
+    );
+  }
+
   const created = (await call(token, '', {
     method: 'POST',
     body: {
