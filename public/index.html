@@ -110,6 +110,17 @@
   .guide ol li b{color:var(--ink)}
   .guide p{margin:9px 0 0;font-size:12.5px;color:var(--ink-3);line-height:1.6}
   .hint{font-size:12.2px;color:var(--ink-3);margin:-6px 0 14px;line-height:1.6}
+  .linkrow{display:flex;gap:14px;align-items:center;justify-content:space-between;
+    padding:14px 16px;margin-bottom:10px;background:var(--bg);border:1px solid var(--line-2);
+    border-radius:10px}
+  .linkrow b{font-size:13.5px}
+  .linkrow .muted{font-size:12.2px;color:var(--ink-3)}
+  .btnlink{flex:none;padding:8px 16px;border-radius:8px;background:var(--accent);color:#fff;
+    font-weight:600;font-size:13px}
+  .btnlink:hover{background:#3d7ae8;text-decoration:none}
+  .formula{display:block;width:100%;overflow-x:auto;white-space:nowrap;padding:9px 11px;
+    font:12px ui-monospace,Menlo,Consolas,monospace;color:#a9c4ef;background:#10151c;
+    border:1px solid var(--line-2);border-radius:7px}
   /* The two switches that decide whether this system acts on the world.
      Deliberately large: a control that starts messaging strangers should not
      look like the checkbox next to it. */
@@ -359,6 +370,35 @@
 
     <div class="card">
       <h3>Google Sheet</h3>
+
+      <!-- Two links because they are two jobs. A browser downloads text/csv
+           rather than showing it, so the URL Sheets needs is not one anybody
+           can read, and vice versa. -->
+      <div class="linkrow">
+        <div>
+          <b>View the tracker in a browser</b>
+          <div class="muted">Opens as a page — nothing downloads. Safe to share or project.</div>
+        </div>
+        <a class="btnlink" id="openSheetView" href="/sheet" target="_blank" rel="noreferrer">Open</a>
+      </div>
+
+      <div class="linkrow" style="align-items:flex-start">
+        <div style="flex:1;min-width:0">
+          <b>Live Google Sheet</b>
+          <div class="muted" style="margin-bottom:8px">
+            Paste this into cell <b>A1</b> of a blank sheet. No key, no service account —
+            it refreshes itself about hourly.
+          </div>
+          <code id="importFormula" class="formula"></code>
+        </div>
+        <button id="copyFormula">Copy</button>
+      </div>
+
+      <p class="hint" style="margin:14px 0 4px">
+        Everything below is the older, optional route — a service account that writes into a sheet
+        you own. The formula above needs none of it.
+      </p>
+
       <div class="switch" style="margin-bottom:14px">
         <input type="checkbox" id="sheetsEnabled">
         <label for="sheetsEnabled" style="margin:0">

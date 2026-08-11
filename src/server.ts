@@ -788,64 +788,192 @@ app.patch(
  * if these ever drifted, the sheet and the exported file would disagree about
  * what was sent, which is the one thing a tracker cannot afford.
  */
-async function buildTrackerCsv(): Promise<string> {
+const TRACKER_HEADERS = [
+  'Listing Name', 'Link', 'Date Listed', 'Asking Price', 'Gross Revenue',
+  'Cash Flow (SDE)', 'EBITDA', 'Broker', 'Broker Phone',
+  'Message Sent', 'Sent At', 'Responded', 'Responded At', 'Their Response', 'Status',
+] as const;
+
+/**
+ * The tracker as plain values — one source for the CSV and the web view.
+ *
+ * Both exist because a browser downloads text/csv rather than showing it, so a
+ * link meant for reading and a link meant for Google Sheets cannot be the same
+ * URL. They must not be able to disagree about what was sent, so they share
+ * this rather than each building their own rows.
+ */
+async function trackerRows(): Promise<{ values: string[][]; sent: number; replied: number }> {
   const listings = await prisma.listing.findMany({
-    orderBy: { firstSeenAt: 'desc' },
+    orderBy: [{ contactedAt: 'desc' }, { firstSeenAt: 'desc' }],
     include: { outreach: { select: { status: true, sentAt: true } } },
   });
-  const cell = (value: unknown) => {
-    let text = value == null ? '' : String(value);
 
-    // Neutralise formulas before quoting.
-    //
-    // This CSV is imported straight into Google Sheets, and two of its columns
-    // are free text written by other people — the listing title, and whatever a
-    // broker replied. A value starting =, +, - or @ is evaluated as a FORMULA
-    // on import, so a reply beginning "=..." stops being text and starts being
-    // code running inside the buyer's deal tracker. A leading apostrophe is the
-    // spreadsheet's own way of saying "this is literal".
-    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
-
-    // \r as well as \n: RFC 4180 requires quoting for carriage returns too, and
-    // a bare \r splits one row into two in both Excel and Sheets.
-    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-  };
-  // Marked UTC, because it is. Stripping the 'Z' and saying nothing left the
-  // buyer — who is in the US — reading a contact time five to eight hours off
-  // with no way to tell, which matters when deciding whether a broker has had
-  // time to reply.
+  // Marked UTC, because it is. Stripping the 'Z' and saying nothing left a
+  // reader in the US five to eight hours out with no way to tell — which
+  // matters when deciding whether a broker has had time to reply.
   const stamp = (value: Date | null | undefined) =>
     value ? `${new Date(value).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
 
-  const rows = [
-    [
-      'Listing Name', 'Link', 'Date Listed', 'Asking Price', 'Gross Revenue',
-      'Cash Flow (SDE)', 'EBITDA', 'Broker', 'Broker Phone',
-      'Message Sent', 'Sent At', 'Responded', 'Responded At', 'Their Response', 'Status',
-    ],
-    ...listings.map((l) => {
-      const sent = l.outreach.find((o) => o.status === 'sent');
-      return [
-        l.title,
-        l.url,
-        l.datePosted ?? '',
-        l.askingPrice ?? '',
-        l.grossRevenue ?? '',
-        l.cashFlow ?? '',
-        l.ebitda ?? '',
-        l.brokerName ?? '',
-        l.brokerPhone ?? '',
-        sent ? 'YES' : 'NO',
-        stamp(sent?.sentAt),
-        l.respondedAt ? 'YES' : 'NO',
-        stamp(l.respondedAt),
-        l.responseNote ?? '',
-        l.status,
-      ];
-    }),
-  ];
-  return rows.map((r) => r.map(cell).join(',')).join('\n');
+  let sent = 0;
+  let replied = 0;
+
+  const values = listings.map((l) => {
+    const outreach = l.outreach.find((o) => o.status === 'sent');
+    if (outreach) sent++;
+    if (l.respondedAt) replied++;
+    return [
+      l.title,
+      l.url,
+      l.datePosted ?? '',
+      l.askingPrice == null ? '' : String(l.askingPrice),
+      l.grossRevenue == null ? '' : String(l.grossRevenue),
+      l.cashFlow == null ? '' : String(l.cashFlow),
+      l.ebitda == null ? '' : String(l.ebitda),
+      l.brokerName ?? '',
+      l.brokerPhone ?? '',
+      outreach ? 'YES' : 'NO',
+      stamp(outreach?.sentAt),
+      l.respondedAt ? 'YES' : 'NO',
+      stamp(l.respondedAt),
+      l.responseNote ?? '',
+      l.status,
+    ];
+  });
+
+  return { values, sent, replied };
 }
+
+async function buildTrackerCsv(): Promise<string> {
+  const { values } = await trackerRows();
+
+  const cell = (value: string) => {
+    let text = value;
+
+    // Neutralise formulas before quoting.
+    //
+    // This is imported straight into Google Sheets and two columns are free
+    // text written by other people — the listing title and whatever a broker
+    // replied. A value starting =, +, - or @ is evaluated as a FORMULA on
+    // import, so a reply beginning "=" stops being text and starts being code
+    // running inside the buyer's deal tracker. A leading apostrophe is the
+    // spreadsheet's own way of saying "this is literal".
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+
+    // \r as well as \n: RFC 4180 requires quoting carriage returns too, and a
+    // bare CR splits one row into two in both Excel and Sheets.
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+
+  return [TRACKER_HEADERS as unknown as string[], ...values]
+    .map((row) => row.map(cell).join(','))
+    .join('\n');
+}
+
+/**
+ * The tracker as a page you can actually look at.
+ *
+ * A browser downloads text/csv rather than rendering it, so the URL that feeds
+ * Google Sheets is useless for reading and the URL for reading is useless to
+ * Sheets. They are different jobs and now different links, sharing one row
+ * builder so they cannot disagree about what was sent.
+ *
+ * Server-rendered, self-contained, no JavaScript: it has to survive being
+ * opened on a phone, forwarded to someone, or projected in a meeting.
+ */
+app.get(
+  '/sheet',
+  handle(async (_req, res) => {
+    const { values, sent, replied } = await trackerRows();
+
+    const esc = (text: string) =>
+      text.replace(/[&<>"']/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string,
+      );
+    const money = (text: string) =>
+      text ? `$${Number(text).toLocaleString('en-US')}` : '<span class="none">—</span>';
+
+    const rows = values
+      .map((v) => {
+        const [title, url, listed, ask, rev, cf, ebitda, broker, phone, isSent, sentAt, isReplied, repliedAt, note, status] = v;
+        // Colour and words together — the whole point of the two indicators is
+        // that they are readable at a glance and to someone who cannot see them.
+        const flag = isReplied === 'YES'
+          ? `<span class="f replied">Responded</span>`
+          : isSent === 'YES'
+            ? `<span class="f sent">Sent</span>`
+            : `<span class="f none">Not contacted</span>`;
+        return `<tr>
+          <td><a href="${esc(url!)}" target="_blank" rel="noreferrer">${esc(title!)}</a>
+            ${note ? `<div class="note">${esc(note)}</div>` : ''}</td>
+          <td class="dim">${esc(listed!) || '<span class="none">—</span>'}</td>
+          <td class="n">${money(ask!)}</td>
+          <td class="n">${money(rev!)}</td>
+          <td class="n">${money(cf!)}</td>
+          <td class="n">${money(ebitda!)}</td>
+          <td>${esc(broker!) || '<span class="none">—</span>'}<div class="dim">${esc(phone!)}</div></td>
+          <td>${flag}<div class="dim">${esc(sentAt! || repliedAt!)}</div></td>
+          <td class="dim">${esc(status!)}</td>
+        </tr>`;
+      })
+      .join('');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deal Flow Tracker</title>
+<style>
+  :root{--bg:#0e1116;--panel:#151a21;--line:#252d38;--ink:#e7ecf3;--dim:#8b98ab;--faint:#5b6678;
+    --good:#3fb950;--warn:#d29922;--accent:#4c8dff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+  header{padding:22px 26px;border-bottom:1px solid var(--line);background:var(--panel);
+    position:sticky;top:0;z-index:5}
+  h1{margin:0 0 4px;font-size:19px;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:13px}
+  .stats{display:flex;gap:26px;margin-top:14px;flex-wrap:wrap}
+  .stat b{display:block;font-size:22px;font-weight:650}
+  .stat span{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
+  .wrap{overflow-x:auto;padding:0 0 60px}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:1000px}
+  th{position:sticky;top:0;text-align:left;padding:10px 14px;background:var(--panel);
+    color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+    border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:hover td{background:#161c25}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .dim{color:var(--dim);font-size:11.5px}
+  .none{color:var(--faint)}
+  .note{color:#8ee79c;font-size:11.5px;margin-top:4px;max-width:420px}
+  .f{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;
+    border:1px solid;white-space:nowrap}
+  .f.sent{background:#3a2f14;color:#f0cd7e;border-color:#6b5620}
+  .f.replied{background:#12291a;color:#8ee79c;border-color:#2a5a30}
+  .f.none{background:transparent;color:var(--faint);border-color:#2f3744}
+</style></head><body>
+<header>
+  <h1>Deal Flow Tracker</h1>
+  <div class="sub">Businesses matching the buy-box — SDE $750k–$1M, 12 industries, all US states.
+    Live view, refreshed on load.</div>
+  <div class="stats">
+    <div class="stat"><b>${values.length}</b><span>Listings</span></div>
+    <div class="stat"><b>${sent}</b><span>Contacted</span></div>
+    <div class="stat"><b>${replied}</b><span>Responded</span></div>
+  </div>
+</header>
+<div class="wrap"><table>
+<thead><tr>
+  <th>Business</th><th>Listed</th><th>Asking</th><th>Revenue</th><th>Cash flow (SDE)</th>
+  <th>EBITDA</th><th>Broker</th><th>Outreach</th><th>Status</th>
+</tr></thead>
+<tbody>${rows || '<tr><td colspan="9" style="padding:60px;text-align:center;color:#5b6678">No listings yet.</td></tr>'}</tbody>
+</table></div>
+</body></html>`);
+  }),
+);
 
 /** Download button — an attachment, so the browser saves it. */
 app.get(

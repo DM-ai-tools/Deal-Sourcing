@@ -397,6 +397,29 @@ async function openRun(id) {
 // Settings
 // ---------------------------------------------------------------------------
 
+// The formula has to carry this deployment's own address — a hard-coded URL
+// would be wrong the moment the app moves, and wrong silently, because
+// IMPORTDATA of a dead host just shows an error in a cell nobody is watching.
+(function showImportFormula() {
+  const url = `${location.origin}/api/sheet.csv`;
+  $('importFormula').textContent = `=IMPORTDATA("${url}")`;
+  $('openSheetView').href = `${location.origin}/sheet`;
+  $('copyFormula').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(`=IMPORTDATA("${url}")`);
+      toast('Formula copied — paste into cell A1 of a blank sheet');
+    } catch {
+      // Clipboard access is refused outside a secure context; selecting the
+      // text is still a copy someone can perform.
+      const range = document.createRange();
+      range.selectNodeContents($('importFormula'));
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      toast('Selected — press Ctrl+C to copy');
+    }
+  };
+})();
+
 async function loadSettings() {
   const { settings, sentToday } = await api('/api/settings');
 
