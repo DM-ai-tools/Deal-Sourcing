@@ -420,6 +420,33 @@ async function openRun(id) {
   };
 })();
 
+$('createSheet').onclick = async () => {
+  $('createSheetResult').innerHTML =
+    '<p class="muted" style="margin-top:10px">Creating the sheet and filling it…</p>';
+  try {
+    const r = await api('/api/sheets/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: $('sheetTitle').value || 'BizBuySell Deal Flow',
+        shareWith: $('sheetShareWith').value ? [$('sheetShareWith').value] : [],
+        anyoneWithLink: $('sheetAnyoneLink').checked,
+      }),
+    });
+    // Lead with the link. It is the only part of this anybody wants.
+    $('createSheetResult').innerHTML = banner(
+      'good',
+      `Sheet created — ${r.rows} listings written`,
+      `<a href="${escape(r.created.url)}" target="_blank" rel="noreferrer"
+          style="font-size:14px;font-weight:600">Open the Google Sheet</a>
+       <div class="muted" style="margin-top:6px">Shared with: ${escape((r.created.sharedWith || []).join(', ') || 'nobody yet')}</div>
+       ${r.warning ? `<div style="margin-top:6px;color:#f0cd7e">${escape(r.warning)}</div>` : ''}`,
+    );
+    loadSettings();
+  } catch (err) {
+    $('createSheetResult').innerHTML = banner('bad', 'Could not create the sheet', escape(err.message));
+  }
+};
+
 async function loadSettings() {
   const { settings, sentToday } = await api('/api/settings');
 

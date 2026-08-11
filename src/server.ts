@@ -29,7 +29,7 @@ import {
 } from './lib/transport.js';
 import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/search-url.js';
 import { DEFAULT_MESSAGE, renderMessage, sendEnquiry } from './lib/outreach.js';
-import { syncToSheet, testSheet, type SheetRow } from './lib/sheets.js';
+import { syncToSheet, testSheet, createSheet, type SheetRow } from './lib/sheets.js';
 import { testInbox, checkInbox, guessImapHost } from './lib/inbox.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -293,6 +293,92 @@ app.post(
 app.post(
   '/api/inbox/check',
   handle(async (_req, res) => ok(res, { result: await checkInbox() })),
+);
+
+/**
+ * Create the client's Google Sheet, fill it, share it, and return the link.
+ *
+ * One call, because the alternative is a person opening sheets.new, pasting a
+ * formula and hand-colouring two rules — fine for whoever built this, wrong for
+ * something handed to a client. A manual step between "the system found 615
+ * businesses" and "here is the link" is where client-facing work gets forgotten
+ * or done differently each time.
+ *
+ * The sheet is populated before the response returns, so the link is never
+ * handed over pointing at an empty document.
+ */
+app.post(
+  '/api/sheets/create',
+  handle(async (req, res) => {
+    const body = z
+      .object({
+        title: z.string().max(120).optional(),
+        shareWith: z.array(z.string().max(200)).max(10).default([]),
+        anyoneWithLink: z.boolean().default(true),
+      })
+      .safeParse(req.body ?? {});
+    if (!body.success) return fail(res, 'Invalid request');
+
+    const settings = await getSettings();
+    if (!settings.googleCredentials) {
+      return fail(
+        res,
+        'No Google service-account key saved. Paste the JSON key into Settings first — that is ' +
+          'the one-time step; everything after it is automatic.',
+      );
+    }
+
+    const created = await createSheet(settings.googleCredentials, {
+      title: body.data.title || 'BizBuySell Deal Flow',
+      shareWith: body.data.shareWith,
+      anyoneWithLink: body.data.anyoneWithLink,
+    });
+
+    // Remember it and switch syncing on, so every future run keeps it current
+    // without anyone coming back here.
+    await prisma.settings.update({
+      where: { id: 1 },
+      data: { sheetId: created.sheetId, sheetsEnabled: true },
+    });
+
+    // Fill it before answering. A link handed to a client that opens on an
+    // empty document is worse than no link.
+    const listings = await prisma.listing.findMany({
+      orderBy: [{ contactedAt: 'desc' }, { firstSeenAt: 'desc' }],
+      include: { outreach: { select: { status: true, sentAt: true } } },
+    });
+
+    const rows: SheetRow[] = listings.map((l) => {
+      const sent = l.outreach.find((o) => o.status === 'sent');
+      return {
+        title: l.title,
+        url: l.url,
+        location: l.location,
+        datePosted: l.datePosted,
+        askingPrice: l.askingPrice,
+        grossRevenue: l.grossRevenue,
+        cashFlow: l.cashFlow,
+        ebitda: l.ebitda,
+        brokerName: l.brokerName,
+        brokerPhone: l.brokerPhone,
+        messageSent: Boolean(sent),
+        sentAt: sent?.sentAt ?? l.contactedAt,
+        responded: Boolean(l.respondedAt),
+        respondedAt: l.respondedAt,
+        responseNote: l.responseNote,
+        status: l.status,
+        firstSeenAt: l.firstSeenAt,
+      };
+    });
+
+    const sync = await syncToSheet(settings.googleCredentials, created.sheetId, rows);
+    await prisma.settings.update({
+      where: { id: 1 },
+      data: { sheetsLastSyncedAt: new Date(), sheetsLastError: sync.ok ? null : sync.error ?? null },
+    });
+
+    ok(res, { created, rows: sync.rows, warning: created.warning ?? (sync.ok ? undefined : sync.error) });
+  }),
 );
 
 /**

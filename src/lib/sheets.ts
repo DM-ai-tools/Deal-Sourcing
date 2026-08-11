@@ -46,7 +46,9 @@ interface ServiceAccount {
   private_key: string;
 }
 
-const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+// Sheets to build the document, Drive to create and share it. A sheet the
+// client cannot open is not a deliverable, and sharing lives in the Drive API.
+const SCOPE = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive';
 
 /** Column order. Changing this changes the sheet, so it lives in one place. */
 const HEADERS = [
@@ -169,7 +171,10 @@ async function call(
   path: string,
   init: { method: string; body?: unknown },
 ): Promise<unknown> {
-  const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${path}`, {
+  const url = path
+    ? `https://sheets.googleapis.com/v4/spreadsheets/${path}`
+    : 'https://sheets.googleapis.com/v4/spreadsheets';
+  const response = await fetch(url, {
     method: init.method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     ...(init.body ? { body: JSON.stringify(init.body) } : {}),
@@ -285,6 +290,88 @@ export async function testSheet(credentialsJson: string, sheetId: string): Promi
   } catch (err) {
     return { ok: false, rows: 0, error: (err as Error).message.slice(0, 300) };
   }
+}
+
+
+/** A spreadsheet the system made, and where to find it. */
+export interface CreatedSheet {
+  sheetId: string;
+  url: string;
+  sharedWith: string[];
+  warning?: string;
+}
+
+/**
+ * Create the Google Sheet, fill it, and make it openable.
+ *
+ * The alternative was a person opening sheets.new, pasting a formula into A1
+ * and hand-colouring two conditional rules. That is fine for the operator and
+ * wrong for a client deliverable — it puts a manual step between "the system
+ * found 615 businesses" and "here is the link", and manual steps are where
+ * client-facing things get forgotten or done differently each time.
+ *
+ * Ownership is the wrinkle worth knowing about: a service account creating a
+ * file owns it, and service accounts have no Drive UI. So the file is shared
+ * immediately — with named people as editors, and optionally with anyone who
+ * has the link as a reader, because a sheet only its creator can open is worse
+ * than no sheet at all.
+ */
+export async function createSheet(
+  credentialsJson: string,
+  options: { title: string; shareWith?: string[]; anyoneWithLink?: boolean },
+): Promise<CreatedSheet> {
+  const account = parseCredentials(credentialsJson);
+  const token = await accessToken(account);
+
+  const created = (await call(token, '', {
+    method: 'POST',
+    body: {
+      properties: { title: options.title },
+      sheets: [{ properties: { title: 'Deal Flow', gridProperties: { frozenRowCount: 1 } } }],
+    },
+  })) as { spreadsheetId?: string; spreadsheetUrl?: string };
+
+  const sheetId = created.spreadsheetId;
+  if (!sheetId) throw new Error('Google created no spreadsheet id.');
+
+  const sharedWith: string[] = [];
+  let warning: string | undefined;
+
+  const share = async (body: Record<string, unknown>, label: string) => {
+    const response = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${sheetId}/permissions?sendNotificationEmail=false`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    if (response.ok) {
+      sharedWith.push(label);
+      return;
+    }
+    // A sheet that exists but cannot be opened is the failure worth naming, so
+    // this reports rather than throws — the document is already created and
+    // losing the id here would strand it.
+    const detail = await response.text().catch(() => '');
+    warning =
+      `Created, but sharing with ${label} failed (${response.status}). ` +
+      `Enable the Drive API for this service account. ${detail.slice(0, 140)}`;
+  };
+
+  for (const email of options.shareWith ?? []) {
+    if (email.trim()) await share({ type: 'user', role: 'writer', emailAddress: email.trim() }, email.trim());
+  }
+  if (options.anyoneWithLink) {
+    await share({ type: 'anyone', role: 'reader' }, 'anyone with the link');
+  }
+
+  return {
+    sheetId,
+    url: created.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${sheetId}/edit`,
+    sharedWith,
+    warning,
+  };
 }
 
 export { HEADERS as SHEET_HEADERS };

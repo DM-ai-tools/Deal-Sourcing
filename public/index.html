@@ -394,9 +394,28 @@
         <button id="copyFormula">Copy</button>
       </div>
 
+      <div class="linkrow" style="align-items:flex-start">
+        <div style="flex:1;min-width:0">
+          <b>Create the Google Sheet automatically</b>
+          <div class="muted" style="margin-bottom:8px">
+            Makes a real Google Sheet, fills it with every listing, colours the sent and responded
+            rows, shares it, and keeps it current after every run. Needs the service-account key
+            below once — after that it is one click, with nothing to paste.
+          </div>
+          <div class="grid g2">
+            <div><label>Share with (email, optional)</label><input id="sheetShareWith"
+                  placeholder="client@example.com"></div>
+            <div><label>Title</label><input id="sheetTitle" value="BizBuySell Deal Flow"></div>
+          </div>
+          <label style="margin-top:8px"><input type="checkbox" id="sheetAnyoneLink" checked
+                style="width:auto"> Anyone with the link can view</label>
+        </div>
+        <button class="primary" id="createSheet">Create</button>
+      </div>
+      <div id="createSheetResult"></div>
+
       <p class="hint" style="margin:14px 0 4px">
-        Everything below is the older, optional route — a service account that writes into a sheet
-        you own. The formula above needs none of it.
+        The fields below are that one-time key, plus the option to point at a sheet you already own.
       </p>
 
       <div class="switch" style="margin-bottom:14px">
