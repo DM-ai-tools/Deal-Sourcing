@@ -54,11 +54,22 @@ export async function login(
     });
     await page.waitForTimeout(2000);
 
-    const email = page.locator('input[type="email"], input[name*="mail" i], #username').first();
-    const password = page.locator('input[type="password"]').first();
+    // First VISIBLE match, not first match.
+    //
+    // This previously used `.first()` on comma-separated selectors and reported
+    // "the login page did not render its form" — which was never true. The form
+    // was there; the locator was resolving to a hidden duplicate, exactly as it
+    // did on the contact form. That false diagnosis is why login was written off
+    // as blocked and made non-fatal.
+    const email = await visibleField(page, [
+      '#username',
+      'input[type="email"]',
+      'input[name*="mail" i]',
+    ]);
+    const password = await visibleField(page, ['input[type="password"]']);
 
-    if (!(await email.isVisible().catch(() => false))) {
-      return { ok: false, error: 'Login page did not render its form — likely blocked before login.' };
+    if (!email || !password) {
+      return { ok: false, error: 'No visible login form on the page — blocked, or the page changed.' };
     }
 
     await email.fill(credentials.email);
@@ -66,9 +77,17 @@ export async function login(
     await password.fill(credentials.password);
     await humanPause(page, 400, 900);
 
+    const submit = await visibleField(page, [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Sign In")',
+      'a:has-text("Sign In")',
+    ]);
+    if (!submit) return { ok: false, error: 'Login form found but no visible submit control.' };
+
     await Promise.all([
       page.waitForLoadState('domcontentloaded').catch(() => {}),
-      page.locator('button[type="submit"], input[type="submit"]').first().click(),
+      submit.click(),
     ]);
     await page.waitForTimeout(4000);
 
