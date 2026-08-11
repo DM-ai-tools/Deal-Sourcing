@@ -295,6 +295,49 @@ app.post(
   handle(async (_req, res) => ok(res, { result: await checkInbox() })),
 );
 
+/**
+ * Forget every stored message and read the window again.
+ *
+ * Needed because ingestion can run before it has been scoped, and it did:
+ * monitoring was switched on against a build that predated `inboxFilterTo`, so
+ * a poll read the whole seven-day window of a mailbox belonging to a person and
+ * wrote thirty unrelated messages — account notices, invoices, a supplier's
+ * newsletter — into a deal database, bodies included.
+ *
+ * Nothing could remove them. Third-party mail stored by mistake has to be
+ * deletable without a database console, so this is a first-class operation
+ * rather than a query someone runs by hand.
+ *
+ * Listing.respondedAt is deliberately left alone: a reply logged by a person is
+ * indistinguishable from one set by the monitor, and destroying someone's
+ * manual work to tidy up after an automated mistake is the worse error.
+ */
+app.post(
+  '/api/inbox/reset',
+  handle(async (req, res) => {
+    const body = z.object({ days: z.number().int().min(0).max(90).default(7) }).safeParse(req.body ?? {});
+    const days = body.success ? body.data.days : 7;
+
+    const deleted = await prisma.reply.deleteMany({});
+    await prisma.settings.update({
+      where: { id: 1 },
+      data: {
+        // Rewind so the same window is read again — this time through the filter.
+        inboxWatermark: new Date(Date.now() - days * 24 * 60 * 60 * 1000),
+        inboxLastUid: 0,
+        inboxLastError: null,
+      },
+    });
+
+    ok(res, {
+      deleted: deleted.count,
+      detail:
+        `Deleted ${deleted.count} stored message(s) and rewound ${days} day(s). The next check ` +
+        `re-reads that window with the current filter applied.`,
+    });
+  }),
+);
+
 /** Everything that arrived, matched or not. Unmatched is the row that matters. */
 app.get(
   '/api/replies',

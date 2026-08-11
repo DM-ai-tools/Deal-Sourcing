@@ -591,6 +591,19 @@ $('testInbox').onclick = async () => {
   }
 };
 
+// If monitoring ran before the filter was set, the database holds mail that
+// should never have been read. This is how it comes back out.
+$('resetInbox').onclick = async () => {
+  if (!confirm('Delete every stored message and re-read the last 7 days with the current filter?')) return;
+  try {
+    const r = await api('/api/inbox/reset', { method: 'POST', body: JSON.stringify({ days: 7 }) });
+    $('inboxResult').innerHTML = banner('good', 'Cleared', escape(r.detail));
+    loadReplies();
+  } catch (err) {
+    $('inboxResult').innerHTML = banner('bad', 'Could not clear', escape(err.message));
+  }
+};
+
 $('checkInbox').onclick = async () => {
   $('inboxResult').innerHTML = '<p class="muted" style="margin-top:10px">Reading the mailbox…</p>';
   try {
