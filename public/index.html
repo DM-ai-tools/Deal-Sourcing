@@ -119,6 +119,7 @@
   <nav>
     <button data-view="tracker" class="on">Tracker</button>
     <button data-view="searches">Searches</button>
+    <button data-view="replies">Replies</button>
     <button data-view="runs">Runs</button>
     <button data-view="settings">Settings</button>
   </nav>
@@ -203,6 +204,18 @@
   </section>
 
   <!-- RUNS -->
+  <section class="view" id="view-replies">
+    <div class="card">
+      <h3>Replies</h3>
+      <p class="hint">
+        Everything that arrived in the mailbox. A reply the system could not tie to a listing
+        still appears here — that is the case worth looking at, because a broker answered and
+        nobody would otherwise know which business they meant. Use “Assign” to attach it.
+      </p>
+      <div id="repliesBody"></div>
+    </div>
+  </section>
+
   <section class="view" id="view-runs">
     <h2>Runs</h2>
     <p class="sub">Each sweep, what it found, and what it sent.</p>
@@ -302,6 +315,55 @@
       </p>
       <button id="testSheet">Test sheet connection</button>
       <div id="sheetResult"></div>
+    </div>
+
+    <div class="card">
+      <h3>Inbox monitoring — how you find out a broker replied</h3>
+      <div class="grid g2" style="margin-bottom:10px">
+        <div><label><input type="checkbox" id="inboxEnabled"> Watch the inbox every 5 minutes</label></div>
+        <div></div>
+        <div><label>Mailbox address</label><input id="inboxUser" placeholder="deals@hyperboards.com"></div>
+        <div><label>Password</label><input id="inboxPassword" type="password"
+              placeholder="leave blank to keep current"></div>
+      </div>
+      <div class="grid g2" style="margin-bottom:10px">
+        <div>
+          <label>How to read it</label>
+          <select id="inboxProvider">
+            <option value="graph">Microsoft 365 (Graph) — required for Outlook/Exchange</option>
+            <option value="imap">IMAP with a password — Gmail, Zoho, most others</option>
+          </select>
+        </div>
+        <div></div>
+      </div>
+      <div class="grid g2" id="graphFields" style="margin-bottom:10px">
+        <div><label>Directory (tenant) ID</label><input id="graphTenantId"></div>
+        <div><label>Application (client) ID</label><input id="graphClientId"></div>
+        <div><label>Client secret</label><input id="graphClientSecret" type="password"
+              placeholder="leave blank to keep current"></div>
+        <div></div>
+      </div>
+      <div class="grid g2" id="imapFields" style="margin-bottom:10px">
+        <div><label>IMAP host</label><input id="inboxHost" placeholder="filled in automatically where known"></div>
+        <div><label>Port</label><input id="inboxPort" type="number" min="1" max="65535"></div>
+      </div>
+      <div class="banner warn" style="margin-bottom:14px">
+        <b>Outlook and Exchange mailboxes cannot use a password here</b>
+        Microsoft turned off basic authentication for IMAP across Microsoft 365, so a correct
+        password is still refused — this was tested against deals@hyperboards.com and returned
+        <code>AUTHENTICATE failed</code>. Use Graph: in Entra, create an app registration, add the
+        <b>Application</b> permission <code>Mail.Read</code>, grant admin consent, then paste the
+        tenant ID, client ID and a client secret above.
+      </div>
+      <p class="hint">
+        Read-only, always: it opens the mailbox read-only, never deletes, never marks anything
+        as read, and tracks its place by message number. A matched reply turns the listing
+        green and copies what they said into the tracker and the sheet. Out-of-office replies
+        and bounces are recorded but never counted as an answer.
+      </p>
+      <button id="testInbox">Test connection</button>
+      <button id="checkInbox">Check for replies now</button>
+      <div id="inboxResult"></div>
     </div>
 
     <div class="card">

@@ -15,9 +15,13 @@
  */
 import { prisma, getSettings, resolveActiveSearch } from './db.js';
 import { executeRun } from './runner.js';
+import { checkInbox } from './inbox.js';
 
 /** How often to look. Well below an hour, so the scan hour is never missed. */
 const CHECK_INTERVAL_MS = 15 * 60 * 1000;
+
+/** How often to read the inbox. A waiting broker is the thing being optimised. */
+const INBOX_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Midnight UTC today. The day boundary is fixed rather than local so it does
  *  not shift under the container, which has no timezone configured. */
@@ -102,4 +106,24 @@ export function startScheduler(): void {
 
   setTimeout(tick, 60_000).unref(); // let boot settle before the first check
   setInterval(tick, CHECK_INTERVAL_MS).unref();
+
+  // Replies are checked far more often than listings are scanned.
+  //
+  // A scan once a day is right — listings appear at that pace. A reply is
+  // someone waiting for an answer, and the cost of being slow is a broker who
+  // concludes nobody is home. Five minutes is cheap: an IMAP poll with nothing
+  // new is one short connection.
+  const pollInbox = () => {
+    checkInbox()
+      .then((result) => {
+        if (result.found) console.log(`[inbox] ${result.detail}`);
+        else if (!result.ok && result.detail !== 'Inbox monitoring is switched off.') {
+          console.error(`[inbox] ${result.detail}`);
+        }
+      })
+      .catch((err) => console.error('[inbox]', (err as Error).message));
+  };
+
+  setTimeout(pollInbox, 90_000).unref();
+  setInterval(pollInbox, INBOX_INTERVAL_MS).unref();
 }

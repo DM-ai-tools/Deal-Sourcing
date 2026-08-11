@@ -15,7 +15,8 @@ const escape = (s) =>
 
 const LABEL = {
   new: 'New',
-  email_sent: 'Email sent',
+  email_sent: 'Message sent',
+  replied: 'Replied',
   nda_signed: 'NDA signed',
   cim_sent: 'CIM sent',
   in_progress: 'In progress',
@@ -65,6 +66,7 @@ document.querySelectorAll('nav button').forEach((button) => {
     if (button.dataset.view === 'tracker') loadListings();
     if (button.dataset.view === 'runs') loadRuns();
     if (button.dataset.view === 'searches') loadSearches();
+    if (button.dataset.view === 'replies') loadReplies();
   };
 });
 
@@ -403,6 +405,14 @@ async function loadSettings() {
   $('phone').value = settings.phone ?? '';
   $('messageTemplate').value = settings.messageTemplate ?? '';
   $('sendingEnabled').checked = settings.sendingEnabled;
+  $('inboxEnabled').checked = settings.inboxEnabled;
+  $('inboxProvider').value = settings.inboxProvider ?? 'graph';
+  $('graphTenantId').value = settings.graphTenantId ?? '';
+  $('graphClientId').value = settings.graphClientId ?? '';
+  showInboxFields();
+  $('inboxUser').value = settings.inboxUser ?? '';
+  $('inboxHost').value = settings.inboxHost ?? '';
+  $('inboxPort').value = settings.inboxPort ?? 993;
   $('dailyScanEnabled').checked = settings.dailyScanEnabled;
   $('scanHourUtc').value = settings.scanHourUtc;
   await fillSearchPicker(settings.activeSearchId);
@@ -463,6 +473,15 @@ $('saveSettings').onclick = async () => {
         transport: $('transport').value,
         bizbuysellEmail: $('bbsEmail').value || null,
         bizbuysellPassword: $('bbsPassword').value || null,
+        inboxEnabled: $('inboxEnabled').checked,
+        inboxProvider: $('inboxProvider').value,
+        graphTenantId: $('graphTenantId').value || null,
+        graphClientId: $('graphClientId').value || null,
+        graphClientSecret: $('graphClientSecret').value || null,
+        inboxUser: $('inboxUser').value || null,
+        inboxHost: $('inboxHost').value || null,
+        inboxPort: Number($('inboxPort').value) || 993,
+        inboxPassword: $('inboxPassword').value || null,
         dailyScanEnabled: $('dailyScanEnabled').checked,
         activeSearchId: $('activeSearchId').value || null,
         scanHourUtc: Number($('scanHourUtc').value),
@@ -475,6 +494,8 @@ $('saveSettings').onclick = async () => {
       }),
     });
     $('bbsPassword').value = '';
+    $('inboxPassword').value = '';
+    $('graphClientSecret').value = '';
     $('googleCredentials').value = '';
     $('proxyPassword').value = '';
     // Arming the switch starts a live run. Say so — someone who has just caused
@@ -540,6 +561,112 @@ async function fillSearchPicker(activeId) {
     if (activeId) select.value = activeId;
   } catch {
     /* the picker is a convenience; settings must still load without it */
+  }
+}
+
+// Show only the fields the chosen method actually uses. Both sets on screen
+// invites filling in the wrong one and reading the resulting auth error as a
+// bad password.
+function showInboxFields() {
+  const graph = $('inboxProvider').value === 'graph';
+  $('graphFields').style.display = graph ? '' : 'none';
+  $('imapFields').style.display = graph ? 'none' : '';
+  $('inboxPassword').closest('div').style.display = graph ? 'none' : '';
+}
+$('inboxProvider').onchange = showInboxFields;
+
+$('testInbox').onclick = async () => {
+  $('inboxResult').innerHTML = '<p class="muted" style="margin-top:10px">Connecting…</p>';
+  try {
+    const { result } = await api('/api/inbox/test', { method: 'POST', body: '{}' });
+    $('inboxResult').innerHTML = banner(
+      result.ok ? 'good' : 'bad',
+      result.ok ? 'Mailbox reachable' : 'Could not sign in',
+      escape(result.detail),
+    );
+  } catch (err) {
+    $('inboxResult').innerHTML = banner('bad', 'Test failed', escape(err.message));
+  }
+};
+
+$('checkInbox').onclick = async () => {
+  $('inboxResult').innerHTML = '<p class="muted" style="margin-top:10px">Reading the mailbox…</p>';
+  try {
+    const { result } = await api('/api/inbox/check', { method: 'POST', body: '{}' });
+    $('inboxResult').innerHTML = banner(
+      result.ok ? 'good' : 'bad',
+      result.ok ? 'Checked' : 'Could not check',
+      escape(result.detail),
+    );
+    if (result.matched) loadListings();
+  } catch (err) {
+    $('inboxResult').innerHTML = banner('bad', 'Check failed', escape(err.message));
+  }
+};
+
+// A reply nobody can act on is the same as no reply, so the unmatched ones lead.
+async function loadReplies() {
+  try {
+    const { replies, unmatched } = await api('/api/replies');
+    if (!replies.length) {
+      $('repliesBody').innerHTML =
+        '<div class="empty">Nothing yet. Replies appear here within five minutes of arriving.</div>';
+      return;
+    }
+
+    const listingOptions = (await api('/api/listings?status=all')).listings
+      .map((l) => `<option value="${l.id}">${escape(l.title).slice(0, 70)}</option>`)
+      .join('');
+
+    $('repliesBody').innerHTML =
+      (unmatched
+        ? banner('warn', `${unmatched} reply(ies) not matched to a listing`,
+            'Someone answered and the system could not tell which business they meant. Assign them below.')
+        : '') +
+      `<div class="scroll"><table><thead><tr>
+        <th>From</th><th>Subject</th><th>What they said</th><th>Listing</th><th>When</th>
+      </tr></thead><tbody>` +
+      replies
+        .map((r) => {
+          const kind = r.isBounce
+            ? '<span class="flag none">Bounce</span>'
+            : r.isAutoReply
+              ? '<span class="flag none">Auto-reply</span>'
+              : '';
+          const listingCell = r.listing
+            ? `<a href="${escape(r.listing.url)}" target="_blank" rel="noreferrer">${escape(r.listing.title).slice(0, 60)}</a>
+               <div class="muted" style="font-size:11px">matched by ${escape(r.matchedBy)}</div>`
+            : `<select class="assign" data-id="${r.id}" style="min-width:180px">
+                 <option value="">— pick a listing —</option>${listingOptions}
+               </select>`;
+          return `<tr>
+            <td>${escape(r.fromName || r.fromEmail)}<div class="muted" style="font-size:11px">${escape(r.fromEmail)}</div>${kind}</td>
+            <td>${escape(r.subject || '')}</td>
+            <td style="max-width:380px">${escape(r.snippet || '').slice(0, 260)}</td>
+            <td>${listingCell}</td>
+            <td class="muted" style="font-size:12px;white-space:nowrap">${escape(when(r.receivedAt))}</td>
+          </tr>`;
+        })
+        .join('') +
+      '</tbody></table></div>';
+
+    document.querySelectorAll('select.assign').forEach((select) => {
+      select.onchange = async () => {
+        if (!select.value) return;
+        try {
+          await api(`/api/replies/${select.dataset.id}/assign`, {
+            method: 'POST',
+            body: JSON.stringify({ listingId: select.value }),
+          });
+          toast('Reply assigned — the listing is now marked as responded');
+          loadReplies();
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+    });
+  } catch (err) {
+    $('repliesBody').innerHTML = `<div class="empty">${escape(err.message)}</div>`;
   }
 }
 

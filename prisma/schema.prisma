@@ -140,9 +140,49 @@ model Listing {
   updatedAt   DateTime  @updatedAt
 
   outreach Outreach[]
+  replies  Reply[]
 
   @@index([status])
   @@index([searchId])
+}
+
+/// An email that arrived in the buyer's inbox.
+///
+/// Every message the monitor reads is stored, matched or not. An unmatched
+/// reply is the interesting failure: it means a broker answered and the system
+/// could not work out which listing they meant — which must surface as a row
+/// someone can act on, not vanish because a title did not match.
+model Reply {
+  id        String   @id @default(cuid())
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  /// The mailbox's own Message-ID. Unique, so re-reading a message — after a
+  /// restart, a UID reset, or a bug — updates rather than duplicates.
+  messageId String   @unique
+  uid       Int?
+
+  fromEmail String
+  fromName  String?
+  subject   String?
+  snippet   String?
+  body      String?
+
+  /// How the match was made: listing-id | url | title | broker | none.
+  /// Recorded because a wrong match is worse than none, and this is the only
+  /// way to tell afterwards which rule was responsible.
+  matchedBy String @default("none")
+
+  /// Out-of-office and delivery failures are not a broker's answer. Kept, so
+  /// a bounce is visible, but they never flip a listing to Responded.
+  isAutoReply Boolean @default(false)
+  isBounce    Boolean @default(false)
+
+  receivedAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([listingId])
+  @@index([receivedAt])
 }
 
 /// One attempt to contact one listing.
@@ -227,6 +267,43 @@ model Settings {
   dailyScanEnabled Boolean   @default(true)
   scanHourUtc      Int       @default(14)
   lastScheduledAt  DateTime?
+
+  /// Inbox monitoring — how a broker's reply reaches the tracker on its own.
+  ///
+  /// Read-only against the mailbox, always. This connects to someone's real
+  /// business inbox, so it opens folders in read-only mode, never deletes,
+  /// never marks anything seen, and tracks its position by UID. If it has a
+  /// bug, the worst it can do is read a message twice.
+  inboxEnabled    Boolean   @default(false)
+  /// imap | graph.
+  ///
+  /// Defaults to graph because the mailbox this was built for is on Exchange
+  /// Online, where IMAP with a password cannot work at all — Microsoft turned
+  /// basic authentication off service-wide, and the probe gets
+  /// "AUTHENTICATE failed" for an entirely correct password. IMAP stays for
+  /// mailboxes that do allow it.
+  inboxProvider   String    @default("graph")
+  inboxHost       String?
+  inboxPort       Int       @default(993)
+  inboxUser       String?
+  inboxPassword   String?
+
+  /// Entra app registration, for the Graph route. Needs the APPLICATION
+  /// permission Mail.Read with admin consent — the delegated one will not work
+  /// for a daemon, because no user is present to approve anything.
+  graphTenantId     String?
+  graphClientId     String?
+  graphClientSecret String?
+
+  /// The newest message already processed. Graph has no UID, so the watermark
+  /// is a timestamp; it advances per message so a poll that dies halfway
+  /// resumes rather than skipping to the newest.
+  inboxWatermark  DateTime?
+  /// Highest UID already ingested, so a restart resumes instead of re-reading
+  /// the whole mailbox — and so a reply is never processed twice.
+  inboxLastUid    Int       @default(0)
+  inboxLastCheckedAt DateTime?
+  inboxLastError  String?
 
   /// Which saved search the scheduler and the arming switch actually run.
   ///

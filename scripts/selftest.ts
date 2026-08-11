@@ -28,6 +28,7 @@ import {
 } from '../src/lib/extract.js';
 import { renderMessage, sendDelayMs, DEFAULT_MESSAGE } from '../src/lib/outreach.js';
 import { looksBlocked } from '../src/lib/transport.js';
+import { matchReply, looksLikeBounce, toSnippet } from '../src/lib/reply-match.js';
 
 let passed = 0;
 let failed = 0;
@@ -306,6 +307,37 @@ check('429 is blocked', looksBlocked(null, 429));
 check('Akamai body is blocked', looksBlocked('<title>Access Denied</title>'));
 check('edgesuite reference is blocked', looksBlocked('see https://errors.edgesuite.net/18.75'));
 check('a real page is not blocked', !looksBlocked('<html><body>Businesses for sale</body></html>', 200));
+
+// ---------------------------------------------------------------------------
+section('Reply matching');
+
+// A wrong match is worse than no match: it sends someone to chase a
+// conversation that never happened and quietly retires one that did. These
+// check that the conservative rules stay conservative.
+const LISTINGS = [
+  { id: 'a', listingId: '2485742', title: 'Military & Commercial Aircraft Component Part Manufacturing',
+    url: 'https://www.bizbuysell.com/business-opportunity/military-and-commercial/2485742/', brokerName: 'Gregory Kovsky' },
+  { id: 'b', listingId: '2492787', title: 'Car Rental Agency',
+    url: 'https://www.bizbuysell.com/business-opportunity/car-rental-agency/2492787/', brokerName: 'Claudia Castro' },
+  { id: 'c', listingId: '2491167', title: 'Profitable Established 2 Locations Property Included',
+    url: 'https://www.bizbuysell.com/business-opportunity/profitable-established/2491167/', brokerName: 'Gregory Kovsky' },
+];
+
+const m = (subject: string, body = '', fromName: string | null = null) =>
+  matchReply({ subject, body, fromName }, LISTINGS);
+
+check('listing id wins', m('Re: your enquiry', 'regarding listing 2485742').matchedBy === 'listing-id');
+check('listing id picks the right one', m('x', 'ref 2492787').listing?.id === 'b');
+check('url matches', m('Re', 'see https://www.bizbuysell.com/business-opportunity/car-rental-agency/2492787/').listing?.id === 'b');
+check('a long title matches',
+  m('Re: Military & Commercial Aircraft Component Part Manufacturing').listing?.id === 'a');
+// "Car Rental Agency" is 17 characters normalised — below the threshold on
+// purpose, because short generic titles collide across unrelated listings.
+check('a short generic title does not match', m('Re: Car Rental Agency').matchedBy !== 'title');
+check('an unambiguous broker matches', m('Re: your offer', 'call me', 'Claudia Castro').matchedBy === 'broker');
+// Gregory Kovsky has two listings, so his name alone cannot say which.
+check('an ambiguous broker does not match', m('Re: your offer', 'call me', 'Gregory Kovsky').matchedBy === 'none');
+check('nothing recognisable stays unmatched', m('Hello', 'are you interested in SEO?').listing === null);
 
 // ---------------------------------------------------------------------------
 console.log(

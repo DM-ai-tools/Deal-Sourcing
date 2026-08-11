@@ -30,6 +30,7 @@ import {
 import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/search-url.js';
 import { DEFAULT_MESSAGE, renderMessage, sendEnquiry } from './lib/outreach.js';
 import { syncToSheet, testSheet, type SheetRow } from './lib/sheets.js';
+import { testInbox, checkInbox, guessImapHost } from './lib/inbox.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -141,6 +142,15 @@ const settingsSchema = z.object({
   dailyScanEnabled: z.boolean().optional(),
   scanHourUtc: z.number().int().min(0).max(23).optional(),
   activeSearchId: z.string().max(60).nullable().optional(),
+  inboxEnabled: z.boolean().optional(),
+  inboxHost: z.string().max(200).nullable().optional(),
+  inboxPort: z.number().int().min(1).max(65535).optional(),
+  inboxUser: z.string().max(200).nullable().optional(),
+  inboxPassword: z.string().max(300).nullable().optional(),
+  inboxProvider: z.enum(['imap', 'graph']).optional(),
+  graphTenantId: z.string().max(100).nullable().optional(),
+  graphClientId: z.string().max(100).nullable().optional(),
+  graphClientSecret: z.string().max(300).nullable().optional(),
 });
 
 app.get(
@@ -154,6 +164,13 @@ app.get(
         bizbuysellPassword: undefined,
         proxyPassword: undefined,
         googleCredentials: undefined,
+        inboxPassword: undefined,
+        graphClientSecret: undefined,
+        hasInbox: Boolean(
+          settings.inboxProvider === 'graph'
+            ? settings.graphTenantId && settings.graphClientId && settings.graphClientSecret
+            : settings.inboxUser && settings.inboxPassword,
+        ),
         hasLogin: Boolean(settings.bizbuysellEmail && settings.bizbuysellPassword),
         hasProxy: Boolean(settings.proxyServer),
         hasGoogle: Boolean(settings.googleCredentials && settings.sheetId),
@@ -176,6 +193,14 @@ app.put(
     if (!data.bizbuysellPassword) delete data.bizbuysellPassword;
     if (!data.proxyPassword) delete data.proxyPassword;
     if (!data.googleCredentials) delete data.googleCredentials;
+    if (!data.inboxPassword) delete data.inboxPassword;
+    if (!data.graphClientSecret) delete data.graphClientSecret;
+
+    // Fill the IMAP host from the address when it is a provider with a fixed
+    // one, so the common case needs a username and password and nothing else.
+    if (data.inboxUser && !data.inboxHost) {
+      data.inboxHost = guessImapHost(data.inboxUser) ?? undefined;
+    }
 
     const updated = await prisma.settings.update({ where: { id: 1 }, data });
 
@@ -220,6 +245,8 @@ app.put(
         bizbuysellPassword: undefined,
         proxyPassword: undefined,
         googleCredentials: undefined,
+        inboxPassword: undefined,
+        graphClientSecret: undefined,
       },
       startedRunId: started?.id ?? null,
       armingNote,
@@ -247,6 +274,64 @@ app.post(
     const mode = asked.success && asked.data.mode ? asked.data.mode : config.transport;
 
     ok(res, { result: await checkReachability({ ...config, transport: mode }) });
+  }),
+);
+
+/**
+ * Inbox monitoring — is the mailbox reachable, and what has arrived?
+ *
+ * Separate routes on purpose: "are these credentials right" and "read the new
+ * mail" fail for entirely different reasons, and one endpoint reporting both
+ * would make a wrong password look like a matching problem.
+ */
+app.post(
+  '/api/inbox/test',
+  handle(async (_req, res) => ok(res, { result: await testInbox() })),
+);
+
+app.post(
+  '/api/inbox/check',
+  handle(async (_req, res) => ok(res, { result: await checkInbox() })),
+);
+
+/** Everything that arrived, matched or not. Unmatched is the row that matters. */
+app.get(
+  '/api/replies',
+  handle(async (_req, res) => {
+    const replies = await prisma.reply.findMany({
+      orderBy: { receivedAt: 'desc' },
+      take: 200,
+      include: { listing: { select: { id: true, title: true, url: true } } },
+    });
+    ok(res, {
+      replies,
+      unmatched: replies.filter((r) => !r.listingId && !r.isAutoReply && !r.isBounce).length,
+    });
+  }),
+);
+
+/**
+ * Attach a reply to a listing by hand.
+ *
+ * Matching is deliberately conservative — a broker with several listings is
+ * genuinely ambiguous and the monitor refuses to guess — so there has to be a
+ * way for a person to say which one it was.
+ */
+app.post(
+  '/api/replies/:id/assign',
+  handle(async (req, res) => {
+    const body = z.object({ listingId: z.string().min(1) }).safeParse(req.body);
+    if (!body.success) return fail(res, 'listingId is required');
+
+    const reply = await prisma.reply.update({
+      where: { id: param(req, 'id') },
+      data: { listingId: body.data.listingId, matchedBy: 'manual' },
+    });
+    await prisma.listing.update({
+      where: { id: body.data.listingId },
+      data: { respondedAt: reply.receivedAt, responseNote: (reply.snippet ?? '').slice(0, 480) },
+    });
+    ok(res, { reply });
   }),
 );
 
@@ -587,6 +672,10 @@ app.get(
 const STATUSES = [
   'new',
   'email_sent',
+  // Set by the inbox monitor when a broker actually answers. It stops there on
+  // purpose: reading "we'd need an NDA first" as nda_signed is a guess, and
+  // every status past this one belongs to whoever is working the deal.
+  'replied',
   'nda_signed',
   'cim_sent',
   'in_progress',
