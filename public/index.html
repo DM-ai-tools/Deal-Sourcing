@@ -110,6 +110,24 @@
   .guide ol li b{color:var(--ink)}
   .guide p{margin:9px 0 0;font-size:12.5px;color:var(--ink-3);line-height:1.6}
   .hint{font-size:12.2px;color:var(--ink-3);margin:-6px 0 14px;line-height:1.6}
+  /* The two switches that decide whether this system acts on the world.
+     Deliberately large: a control that starts messaging strangers should not
+     look like the checkbox next to it. */
+  .bigtoggle{display:flex;gap:16px;align-items:flex-start;padding:16px 18px;margin-bottom:12px;
+    background:var(--bg);border:1px solid var(--line-2);border-radius:11px}
+  .bigtoggle b{font-size:14.5px}
+  .bigtoggle .muted{font-size:12.4px;line-height:1.65;margin-top:3px}
+  .switchbox{position:relative;flex:none;margin:2px 0 0;cursor:pointer;width:56px;height:31px}
+  .switchbox input{position:absolute;opacity:0;width:0;height:0}
+  .track{position:absolute;inset:0;border-radius:999px;background:var(--line);
+    border:1px solid var(--line-2);transition:.18s}
+  .knob{position:absolute;top:3px;left:3px;width:23px;height:23px;border-radius:50%;
+    background:var(--ink-2);transition:.18s}
+  .switchbox input:checked + .track{background:#1a4a26;border-color:var(--good)}
+  .switchbox input:checked + .track .knob{left:29px;background:var(--good)}
+  /* Sending is the dangerous one, so it reads as live rather than merely on. */
+  #autoSend:checked + .track{background:#4a2a12;border-color:var(--warn)}
+  #autoSend:checked + .track .knob{background:var(--warn)}
 </style>
 </head>
 <body>
@@ -179,6 +197,53 @@
       </ol>
       <p>Leave every state unticked for all locations. Preview URLs shows exactly which pages will be swept.</p>
     </div>
+
+    <div class="card" id="autoCard">
+      <h3>Automated crawling</h3>
+      <p class="hint" style="margin-top:-4px">
+        Two switches. The first decides whether the system looks; the second decides whether it
+        writes to anyone. They are separate because a daily scan is harmless and a daily send is not.
+      </p>
+
+      <div class="bigtoggle">
+        <label class="switchbox">
+          <input type="checkbox" id="autoScan">
+          <span class="track"><span class="knob"></span></span>
+        </label>
+        <div>
+          <b>Crawl every day</b>
+          <div class="muted">
+            One sweep of the whole buy-box each day at
+            <input id="autoHour" type="number" min="0" max="23" style="width:62px;display:inline-block;padding:3px 6px">
+            :00 UTC. Twelve requests, all fifty states. Off means nothing runs unless you press a button.
+          </div>
+        </div>
+      </div>
+
+      <div class="bigtoggle">
+        <label class="switchbox">
+          <input type="checkbox" id="autoSend">
+          <span class="track"><span class="knob"></span></span>
+        </label>
+        <div>
+          <b>Send messages</b>
+          <div class="muted">
+            Contact every new match the crawl finds, paced and capped at
+            <input id="autoCap" type="number" min="1" max="500" style="width:72px;display:inline-block;padding:3px 6px">
+            a day. <b>These are real messages to real brokers.</b> Switching this on also starts a
+            run immediately; switching it off stops one already in progress.
+          </div>
+        </div>
+      </div>
+
+      <div id="autoState" class="banner" style="margin-bottom:0"></div>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="autoSave">Save</button>
+        <button id="autoRunNow">Run one now</button>
+      </div>
+      <div id="autoResult"></div>
+    </div>
+
     <div class="card">
       <h3>New search</h3>
       <div class="grid g2" style="margin-bottom:16px">

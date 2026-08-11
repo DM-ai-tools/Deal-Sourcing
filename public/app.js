@@ -65,7 +65,7 @@ document.querySelectorAll('nav button').forEach((button) => {
     );
     if (button.dataset.view === 'tracker') loadListings();
     if (button.dataset.view === 'runs') loadRuns();
-    if (button.dataset.view === 'searches') loadSearches();
+    if (button.dataset.view === 'searches') { loadSearches(); loadAutomation(); }
     if (button.dataset.view === 'replies') loadReplies();
   };
 });
@@ -835,3 +835,110 @@ async function checkDatabase() {
   await loadSettings().catch((err) => toast(err.message));
   await loadListings().catch((err) => toast(err.message));
 })();
+
+// ---------------------------------------------------------------------------
+// Automated crawling
+// ---------------------------------------------------------------------------
+
+/**
+ * The two switches, and an honest statement of what they add up to.
+ *
+ * They read the same settings the scheduler reads, so this is a second view of
+ * one truth rather than a second copy of it — a panel that could disagree with
+ * the scheduler about whether messages are going out would be worse than no
+ * panel.
+ */
+async function loadAutomation() {
+  try {
+    const { settings } = await api('/api/settings');
+    $('autoScan').checked = settings.dailyScanEnabled;
+    $('autoSend').checked = settings.sendingEnabled;
+    $('autoHour').value = settings.scanHourUtc ?? 14;
+    $('autoCap').value = settings.dailyCap ?? 40;
+    paintAutoState(settings);
+  } catch (err) {
+    $('autoState').className = 'banner bad';
+    $('autoState').innerHTML = `<b>Could not read settings</b>${escape(err.message)}`;
+  }
+}
+
+/** Say plainly what the current combination does. Both switches matter. */
+function paintAutoState(settings) {
+  const scan = settings.dailyScanEnabled;
+  const send = settings.sendingEnabled;
+  const at = `${String(settings.scanHourUtc ?? 14).padStart(2, '0')}:00 UTC`;
+
+  const [kind, title, body] =
+    scan && send
+      ? ['good', 'Fully automatic',
+         `Every day at ${at} the system sweeps the buy-box and messages every new match it finds, ` +
+         `up to ${settings.dailyCap} a day. Real messages to real brokers, without anyone pressing anything.`]
+      : scan
+        ? ['warn', 'Crawling only',
+           `Sweeps daily at ${at} and fills the tracker. Nothing is sent — turn on Send messages for that.`]
+        : send
+          ? ['warn', 'Sending armed, but nothing schedules it',
+             'Messages go out when a run happens, and no run is scheduled. Turn on Crawl every day, ' +
+             'or start one by hand.']
+          : ['bad', 'Idle',
+             'Nothing runs on its own. The tracker only changes when you press a button.'];
+
+  $('autoState').className = `banner ${kind}`;
+  $('autoState').innerHTML = `<b>${title}</b>${body}`;
+}
+
+$('autoSave').onclick = async () => {
+  const send = $('autoSend').checked;
+  // Confirm the irreversible half, and only when it is being switched ON.
+  if (send && !$('autoSend').dataset.was) {
+    if (!confirm(
+      'Turn on sending?\n\nThis sends real enquiries to real business brokers, ' +
+      `up to ${$('autoCap').value} a day, and starts a run now.`,
+    )) return;
+  }
+  try {
+    const saved = await api('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        dailyScanEnabled: $('autoScan').checked,
+        sendingEnabled: send,
+        scanHourUtc: Number($('autoHour').value),
+        dailyCap: Number($('autoCap').value),
+      }),
+    });
+    paintAutoState(saved.settings);
+    toast(
+      saved.startedRunId
+        ? 'Saved — sending armed and a run has started.'
+        : saved.armingNote || 'Saved.',
+    );
+    loadRuns();
+  } catch (err) {
+    toast(err.message);
+  }
+};
+
+$('autoRunNow').onclick = async () => {
+  $('autoResult').innerHTML = '<p class="muted" style="margin-top:10px">Starting…</p>';
+  try {
+    const { outcome } = await api('/api/run-daily-scan', {
+      method: 'POST',
+      body: JSON.stringify({ force: true }),
+    });
+    const started = outcome.startsWith('Daily scan started');
+    $('autoResult').innerHTML = banner(started ? 'good' : 'warn',
+      started ? 'Run started' : 'Not started', escape(outcome));
+    loadRuns();
+  } catch (err) {
+    $('autoResult').innerHTML = banner('bad', 'Could not start', escape(err.message));
+  }
+};
+
+// Reflect the pair immediately, so the description never lags the switches.
+$('autoScan').onchange = () => paintAutoState({
+  dailyScanEnabled: $('autoScan').checked,
+  sendingEnabled: $('autoSend').checked,
+  scanHourUtc: Number($('autoHour').value),
+  dailyCap: Number($('autoCap').value),
+});
+$('autoSend').onchange = $('autoScan').onchange;
