@@ -508,6 +508,8 @@ async function contact(
   const transport = makeBrowserTransport(config);
   let sent = 0;
   let failed = 0;
+  // Consecutive blocks. Reset by any send that actually reaches the form.
+  let blockedInARow = 0;
 
   try {
     // Signing in is an optimisation, not a requirement.
@@ -664,12 +666,57 @@ async function contact(
         });
       } else {
         failed++;
+
+        // Being blocked is not the listing's fault, so it must not cost the
+        // listing an attempt.
+        //
+        // Attempts are spent at claim time, before the outcome is known, and
+        // three spent attempts retire a listing for good. On a day when
+        // BizBuySell refuses everything — as it did today, all twelve search
+        // pages and all twenty sends — the scheduler would burn twenty listings
+        // per run against a wall it never reached, and inside three days sixty
+        // businesses would be permanently marked as tried and never contacted.
+        // The retry budget exists for listings whose form is genuinely broken,
+        // not for the days the site says no to everyone.
+        const blocked = /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|bot wall|timed out waiting for the browser/i.test(
+          outcome.error ?? '',
+        );
+
         await prisma.outreach.update({
           where: { id: claimed.id },
-          data: { status: 'failed', error: outcome.error, screenshot: outcome.screenshot },
+          data: {
+            status: 'failed',
+            error: outcome.error,
+            screenshot: outcome.screenshot,
+            ...(blocked && armed ? { attempts: { decrement: 1 } } : {}),
+          },
         });
-        await log(runId, `${listing.title}: ${outcome.error}`, 'warn');
+        await log(
+          runId,
+          `${listing.title}: ${outcome.error}${blocked ? ' (blocked — attempt refunded)' : ''}`,
+          'warn',
+        );
+
+        // Stop early when the site is plainly refusing everyone.
+        //
+        // Today's run spent three hours failing all twenty in turn, waiting four
+        // to ten minutes between each. That is time wasted and, worse, twenty
+        // more requests aimed at a site already saying no — which is how a soft
+        // block becomes a hard one. Three refusals in a row is enough to
+        // conclude it is not this listing, it is us.
+        if (blocked && ++blockedInARow >= 3) {
+          await log(
+            runId,
+            `Stopping: ${blockedInARow} listings refused in a row, so the site is blocking this ` +
+              `address rather than failing on individual listings. Nothing was consumed — these ` +
+              `listings keep their retry budget and are first in line next run.`,
+            'error',
+          );
+          break;
+        }
       }
+
+      if (outcome.ok) blockedInARow = 0;
 
       await prisma.run
         .update({ where: { id: runId }, data: { messagesSent: sent, messagesFailed: failed } })
