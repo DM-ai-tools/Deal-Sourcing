@@ -36,6 +36,15 @@ const MAX_PAGES_PER_URL = 20;
  * a broker sees a handful of messages rather than an unbounded stream.
  */
 const MAX_SEND_ATTEMPTS = 3;
+
+/**
+ * How many listing pages a NON-sending run may spend on financial enrichment.
+ *
+ * Unbounded, this was six hundred requests per run against the one endpoint
+ * BizBuySell rate-limits hardest. Even with nothing else competing, that is
+ * more than the site tolerates and more than the data is worth.
+ */
+const ENRICH_PAGE_BUDGET = 60;
 /** Politeness between reads. The site is not ours to hammer. */
 const READ_DELAY_MS = 1500;
 
@@ -106,7 +115,10 @@ export async function executeRun(runId: string): Promise<void> {
       data: { status: 'discovering', transport: settings.transport },
     });
 
-    const discovered = await discover(runId, filters, transportConfig, controller.signal);
+    // Both switches, same rule the contact phase uses: a run only sends if it
+    // was armed AND the master switch is on.
+    const willSend = settings.sendingEnabled && !run.dryRun;
+    const discovered = await discover(runId, filters, transportConfig, controller.signal, willSend);
 
     if (controller.signal.aborted) {
       await finish(runId, 'stopped', 'Stopped during discovery.');
@@ -276,6 +288,8 @@ async function discover(
   filters: SearchFilters,
   config: TransportConfig,
   signal: AbortSignal,
+  /** True when this run will send. Decides how listing-page budget is spent. */
+  willSend: boolean,
 ): Promise<ExtractedListing[]> {
   const transport = makeTransport(config);
   const byId = new Map<string, ExtractedListing>();
@@ -344,11 +358,38 @@ async function discover(
       );
     }
 
-    // Enrich from detail pages where the transport can reach them. Best-effort
-    // by design: the tracker is already useful from card data alone.
-    const needsDetail = [...byId.values()].filter(
-      (l) => l.grossRevenue == null || l.ebitda == null || l.brokerName == null,
-    );
+    // Enrich from detail pages — but never at the cost of sending.
+    //
+    // Listing-page loads are the scarce resource here. BizBuySell serves search
+    // pages freely and rate-limits listing pages hard, and this loop used to
+    // fetch one for EVERY listing missing an EBITDA or a broker name: six
+    // hundred requests, back to back, to fill optional columns. By the time the
+    // contact phase started, the budget was gone — discovery reported 605
+    // listings found and then all twenty sends failed with
+    // ERR_HTTP_RESPONSE_CODE_FAILURE, including the login. A single test send
+    // twenty minutes earlier had worked fine.
+    //
+    // The `detailFailures >= 5` guard below did not save it, because it counts
+    // CONSECUTIVE failures and resets on every success — so a run can grind
+    // through hundreds of successful fetches and still exhaust the quota.
+    //
+    // So: an armed run skips enrichment entirely. The financials are
+    // best-effort and the card data already carries asking price and cash flow,
+    // which is what the buy-box filters on. Contacting a broker is the job;
+    // filling in an EBITDA column is not worth losing it for. A dry run still
+    // enriches, capped, because nothing is competing for the budget.
+    const detailBudget = willSend ? 0 : ENRICH_PAGE_BUDGET;
+
+    const needsDetail = [...byId.values()]
+      .filter((l) => l.grossRevenue == null || l.ebitda == null || l.brokerName == null)
+      .slice(0, detailBudget);
+
+    if (willSend) {
+      await log(
+        runId,
+        'Skipping detail enrichment — saving the listing-page budget for sending.',
+      );
+    }
 
     if (needsDetail.length && !signal.aborted) {
       await log(runId, `Reading ${needsDetail.length} listing pages for full financials.`);
