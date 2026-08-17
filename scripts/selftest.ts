@@ -16,6 +16,8 @@ import {
   INDUSTRIES,
   DEFAULT_INDUSTRIES,
   STATES,
+  postedRecency,
+  newestFirst,
 } from '../src/lib/search-url.js';
 import {
   parseMoney,
@@ -163,6 +165,30 @@ check('page 2 is not a query param', !paginate(urls[0]!, 2).includes('page=2'));
 check(
   'paginating preserves the filters',
   decodeSearchQuery(paginate(urls[0]!, 3))?.includes('cffrom=750000') === true,
+);
+
+// ---------------------------------------------------------------------------
+section('Contact priority');
+
+// BizBuySell publishes no posted date, so recency comes from the listing id,
+// which is handed out in sequence. Measured: listings newly appearing in daily
+// sweeps have ids near 2,540,000; the older bulk sits near 2,488,000.
+check('a higher id is more recent', postedRecency('2541692') > postedRecency('2401833'));
+check('an unparseable id sorts last, never first', postedRecency('abc') === 0);
+
+const queue = [
+  { listingId: '2401833' }, // old
+  { listingId: '2541692' }, // newest
+  { listingId: '1702322' }, // oldest in the real data
+  { listingId: '2496102' },
+].sort(newestFirst);
+check('newest first', queue[0]!.listingId === '2541692');
+check('oldest last', queue[3]!.listingId === '1702322');
+check('and the middle is ordered too', queue[1]!.listingId === '2496102');
+// Lexical sorting would put "999" first; numeric must not.
+check(
+  'sorted numerically, not as text',
+  [{ listingId: '999' }, { listingId: '2541692' }].sort(newestFirst)[0]!.listingId === '2541692',
 );
 
 // ---------------------------------------------------------------------------

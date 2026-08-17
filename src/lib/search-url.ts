@@ -95,6 +95,36 @@ export interface SearchFilters {
 const BASE = 'https://www.bizbuysell.com';
 
 /**
+ * How recently a listing was posted, as a sortable number.
+ *
+ * BizBuySell publishes no posted date — not on the search card, not on the
+ * listing page, not in its JSON-LD, not in a meta tag. `datePosted` is null for
+ * every listing ever collected, and no parser will change that.
+ *
+ * What it does publish is the listing id, and those are handed out in sequence
+ * as listings are created. Measured across 644 collected listings: the ones
+ * that first appeared in the last few daily sweeps — genuinely new to the
+ * market — have a median id around 2,540,000, while the bulk collected earlier
+ * sits near 2,488,000, and the oldest in the set is 1,702,322. The spread IS
+ * the age.
+ *
+ * So a bigger id means a fresher listing. It is a proxy rather than a date, and
+ * worth naming as one: it orders correctly but cannot tell you "posted 3 weeks
+ * ago". For deciding who to contact first, ordering is the whole requirement.
+ */
+export function postedRecency(listingId: string): number {
+  const digits = Number(String(listingId).replace(/\D/g, ''));
+  // An unparseable id sorts last rather than first — an unknown listing should
+  // never jump the queue ahead of one known to be fresh.
+  return Number.isFinite(digits) ? digits : 0;
+}
+
+/** Newest-posted first. Use with `.sort()`. */
+export function newestFirst(a: { listingId: string }, b: { listingId: string }): number {
+  return postedRecency(b.listingId) - postedRecency(a.listingId);
+}
+
+/**
  * The set of URLs one search expands to.
  *
  * BizBuySell's paths carry one location and one industry each, so a search

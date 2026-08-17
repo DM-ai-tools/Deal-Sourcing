@@ -13,7 +13,7 @@
  */
 import { prisma, getSettings, countSentToday } from './db.js';
 import { makeTransport, makeBrowserTransport, type TransportConfig } from './transport.js';
-import { buildSearchUrls, paginate, type SearchFilters } from './search-url.js';
+import { buildSearchUrls, newestFirst, paginate, type SearchFilters } from './search-url.js';
 import {
   extractSearchResults,
   extractListingDetail,
@@ -421,8 +421,23 @@ async function contact(
         none: { OR: [{ status: 'sent' }, { attempts: { gte: MAX_SEND_ATTEMPTS } }] },
       },
     },
+    // Ordered again below. The database cannot do it: listingId is a string
+    // column, so SQL would sort "999" above "2541692".
     orderBy: { firstSeenAt: 'asc' },
   });
+
+  // Newest listings first.
+  //
+  // A business posted this week is still choosing who to talk to; one that has
+  // sat for six months has already heard from everybody, and its broker is the
+  // least likely to answer. With a cap of twenty a day and hundreds waiting,
+  // the order decides which conversations actually happen — so freshest first
+  // is not a nicety, it is most of the value.
+  //
+  // Recency comes from the listing id, because BizBuySell publishes no date
+  // anywhere on the pages we read. See postedRecency() for the measurement
+  // behind that.
+  pending.sort(newestFirst);
 
   if (pending.length === 0) {
     await log(runId, 'No new listings to contact.');
