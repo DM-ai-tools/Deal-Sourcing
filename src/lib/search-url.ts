@@ -105,7 +105,19 @@ const BASE = 'https://www.bizbuysell.com';
  */
 export function buildSearchUrls(filters: SearchFilters): string[] {
   const industries = filters.industries.length ? filters.industries : ['businesses'];
-  const states = filters.states.length ? filters.states : [null];
+
+  // Every state selected is the same request as no state selected — both mean
+  // the whole country — but they are not the same cost. BizBuySell's national
+  // pages cover all fifty in ONE path, so twelve industries is twelve requests;
+  // asking state by state is six hundred, and the site starts refusing long
+  // before that finishes. It already has: a fifty-state run read 82 pages, was
+  // blocked for the rest, and contacted nobody in three hours.
+  //
+  // So an all-states selection is collapsed to the national sweep. The operator
+  // gets to tick every state — which is what "all of the USA" looks like — and
+  // the crawler still does the cheap thing.
+  const everyState = filters.states.length >= STATES.length;
+  const states = filters.states.length && !everyState ? filters.states : [null];
 
   const query = financialQuery(filters);
   const urls: string[] = [];

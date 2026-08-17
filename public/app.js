@@ -198,6 +198,13 @@ function when(value) {
 $('q').oninput = debounce(loadListings, 350);
 $('statusFilter').onchange = loadListings;
 
+/** How a saved search's locations should read. All fifty and none are the same. */
+function statesLabel(states) {
+  const chosen = (states || []).length;
+  if (chosen === 0 || chosen >= (META.states || []).length) return 'all 50 states';
+  return (states || []).join(', ');
+}
+
 function debounce(fn, ms) {
   let timer;
   return (...args) => {
@@ -284,7 +291,7 @@ async function loadSearches() {
             <h3 style="margin:0 0 4px">${escape(s.name)}</h3>
             <div class="muted" style="font-size:12.5px">
               ${(s.industries || []).length} industries ·
-              ${(s.states || []).length ? (s.states || []).join(', ') : 'all locations'} ·
+              ${statesLabel(s.states)} ·
               SDE ${s.cashFlowMin ? '$' + s.cashFlowMin.toLocaleString() : 'any'}–${s.cashFlowMax ? '$' + s.cashFlowMax.toLocaleString() : 'any'} ·
               ${s._count.runs} run(s), ${s._count.listings} listing(s)
             </div>
@@ -604,8 +611,11 @@ async function fillSearchPicker(activeId) {
     select.innerHTML = searches
       .map((s) => {
         const states = (s.states || []).length;
-        const urls = (states || 1) * (s.industries || []).length;
-        const scope = states ? `${states} states` : 'national — all states';
+        // All fifty is collapsed to the national sweep, so its real cost is one
+        // request per industry — not fifty. Showing 600 here would be a lie.
+        const national = states === 0 || states >= (META.states || []).length;
+        const urls = (national ? 1 : states) * (s.industries || []).length;
+        const scope = national ? 'all 50 states' : `${states} states`;
         return `<option value="${s.id}">${escape(s.name)} — ${scope}, ` +
           `${(s.industries || []).length} industries (${urls} requests)</option>`;
       })
@@ -869,10 +879,14 @@ async function checkDatabase() {
       meta.industries.map((i) => ({ value: i.slug, label: i.label })),
       meta.defaultIndustries,
     );
+    // Every state ticked by default. Coverage is unchanged either way — all
+    // fifty selected and none selected both mean "the whole country" — but
+    // showing them ticked says so plainly instead of relying on someone knowing
+    // that an empty list means everywhere.
     renderChips(
       'states',
       meta.states.map((s) => ({ value: s.code, label: s.code })),
-      [],
+      meta.states.map((s) => s.code),
     );
   } catch (err) {
     $('alerts').innerHTML = banner('bad', 'Cannot reach the server', escape(err.message));

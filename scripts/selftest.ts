@@ -124,6 +124,22 @@ const stateUrls = buildSearchUrls({
   industries: ['manufacturing', 'retail', 'travel'],
 });
 check('states multiply the url set', stateUrls.length === 6);
+
+// All fifty ticked means the same thing as none ticked — the whole country —
+// but not the same cost: national is one path per industry, state-by-state is
+// fifty. A run that did it the expensive way read 82 pages, got blocked for the
+// rest, and contacted nobody in three hours.
+const allStates = buildSearchUrls({
+  states: STATES.map((s) => s.code),
+  industries: DEFAULT_INDUSTRIES,
+});
+check('all fifty states collapses to the national sweep', allStates.length === 12);
+check('and does not put a state in the path', !allStates.some((u) => u.includes('/california/')));
+check(
+  'all-states and no-states produce identical urls',
+  JSON.stringify(allStates) ===
+    JSON.stringify(buildSearchUrls({ states: [], industries: DEFAULT_INDUSTRIES })),
+);
 check('state slug is used, not the code', stateUrls[0]!.includes('/california/'));
 // Listing types are always applied, so there is always a q — but never a
 // cash-flow bound that nobody asked for.
