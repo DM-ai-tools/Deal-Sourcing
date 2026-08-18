@@ -31,6 +31,7 @@ import { INDUSTRIES, STATES, DEFAULT_INDUSTRIES, buildSearchUrls } from './lib/s
 import { DEFAULT_MESSAGE, renderMessage, sendEnquiry } from './lib/outreach.js';
 import { syncToSheet, testSheet, createSheet, type SheetRow } from './lib/sheets.js';
 import { testInbox, checkInbox, guessImapHost } from './lib/inbox.js';
+import { agentConfig, agentClaim, agentReport, agentRelease } from './lib/agent-api.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -148,6 +149,8 @@ const settingsSchema = z.object({
   inboxUser: z.string().max(200).nullable().optional(),
   inboxPassword: z.string().max(300).nullable().optional(),
   inboxProvider: z.enum(['imap', 'graph']).optional(),
+  agentEnabled: z.boolean().optional(),
+  agentToken: z.string().max(200).nullable().optional(),
   inboxFilterTo: z.string().max(200).nullable().optional(),
   graphTenantId: z.string().max(100).nullable().optional(),
   graphClientId: z.string().max(100).nullable().optional(),
@@ -167,6 +170,9 @@ app.get(
         googleCredentials: undefined,
         inboxPassword: undefined,
         graphClientSecret: undefined,
+        agentToken: undefined,
+        hasAgentToken: Boolean(settings.agentToken),
+        agentTokenHint: settings.agentToken ? `${settings.agentToken.slice(0, 6)}…` : null,
         hasInbox: Boolean(
           settings.inboxProvider === 'graph'
             ? settings.graphTenantId && settings.graphClientId && settings.graphClientSecret
@@ -248,6 +254,7 @@ app.put(
         googleCredentials: undefined,
         inboxPassword: undefined,
         graphClientSecret: undefined,
+        agentToken: undefined,
       },
       startedRunId: started?.id ?? null,
       armingNote,
@@ -462,6 +469,82 @@ app.post(
       data: { respondedAt: reply.receivedAt, responseNote: (reply.snippet ?? '').slice(0, 480) },
     });
     ok(res, { reply });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Local sending agent
+// ---------------------------------------------------------------------------
+
+/**
+ * Every agent route is behind a shared secret.
+ *
+ * These hand out real listings and record real sends, and this dashboard has no
+ * login. Without a secret, anyone who found the URL could drain the queue or
+ * mark brokers as contacted — and the tracker would look right while nothing
+ * had been sent, which is the worst shape a lie can take here.
+ *
+ * Timing-safe compare, because a token checked with === leaks its prefix to
+ * anyone patient enough to measure.
+ */
+async function agentAuthorised(req: express.Request): Promise<boolean> {
+  const settings = await getSettings();
+  if (!settings.agentToken) return false;
+
+  const offered = String(req.header('x-agent-token') ?? '');
+  const expected = settings.agentToken;
+  if (offered.length !== expected.length) return false;
+
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= offered.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
+
+const agentRoute =
+  (fn: (req: express.Request, res: express.Response) => Promise<unknown>) =>
+  handle(async (req, res) => {
+    if (!(await agentAuthorised(req))) return fail(res, 'Bad or missing agent token.', 401);
+    return fn(req, res);
+  });
+
+/** Should the agent be working, how fast, and how many are left today. */
+app.get('/api/agent/config', agentRoute(async (_req, res) => ok(res, await agentConfig())));
+
+/** Reserve listings to send. The reservation is what prevents a double send. */
+app.post(
+  '/api/agent/claim',
+  agentRoute(async (req, res) => {
+    const body = z.object({ limit: z.number().int().min(1).max(50).default(5) }).safeParse(req.body ?? {});
+    const limit = body.success ? body.data.limit : 5;
+    ok(res, { jobs: await agentClaim(limit) });
+  }),
+);
+
+/** Record the outcome of one send. Safe to call twice with the same result. */
+app.post(
+  '/api/agent/report',
+  agentRoute(async (req, res) => {
+    const body = z
+      .object({
+        listingId: z.string().min(1),
+        ok: z.boolean(),
+        confirmation: z.string().max(2000).optional(),
+        error: z.string().max(2000).optional(),
+        screenshot: z.string().max(2_000_000).optional(),
+      })
+      .safeParse(req.body);
+    if (!body.success) return fail(res, 'Invalid report');
+    ok(res, await agentReport(body.data));
+  }),
+);
+
+/** Give back claims that will not be sent, so they are not parked. */
+app.post(
+  '/api/agent/release',
+  agentRoute(async (req, res) => {
+    const body = z.object({ listingIds: z.array(z.string()).max(50).default([]) }).safeParse(req.body ?? {});
+    if (!body.success) return fail(res, 'Invalid release');
+    ok(res, { released: await agentRelease(body.data.listingIds) });
   }),
 );
 

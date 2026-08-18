@@ -442,6 +442,48 @@
     </div>
 
     <div class="card">
+      <h3>Local sending agent</h3>
+      <p class="hint" style="margin-top:-4px">
+        BizBuySell refuses this server's address, so sending runs on your own machine instead.
+        The server still finds listings, holds the queue and records everything — the agent only
+        sends. With this on, the server stops trying to send entirely, because two senders sharing
+        one queue is how a broker gets messaged twice.
+      </p>
+
+      <div class="bigtoggle">
+        <label class="switchbox">
+          <input type="checkbox" id="agentEnabled">
+          <span class="track"><span class="knob"></span></span>
+        </label>
+        <div>
+          <b>Send from my computer</b>
+          <div class="muted" id="agentStatus">—</div>
+        </div>
+      </div>
+
+      <div class="grid g2" style="margin-bottom:10px">
+        <div>
+          <label>Agent token <span class="muted">— the agent's password</span></label>
+          <input id="agentToken" placeholder="click Generate">
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:8px">
+          <button id="genAgentToken">Generate</button>
+          <button id="copyAgentEnv">Copy .env lines</button>
+        </div>
+      </div>
+
+      <p class="hint" style="margin-bottom:6px"><b>To start it</b> — once only:</p>
+      <code class="formula" id="agentEnvBlock"></code>
+      <p class="hint" style="margin-top:8px">
+        Put those two lines in <code>.env</code> in the project folder, then double-click
+        <code>run-agent.cmd</code>. Leave the window open. It picks up work within a minute,
+        obeys the daily cap and pacing set above, and stops the moment you switch this off —
+        no need to touch the machine again.
+      </p>
+      <div id="agentResult"></div>
+    </div>
+
+    <div class="card">
       <h3>Inbox monitoring — how you find out a broker replied</h3>
       <div class="grid g2" style="margin-bottom:10px">
         <div><label><input type="checkbox" id="inboxEnabled"> Watch the inbox every 5 minutes</label></div>

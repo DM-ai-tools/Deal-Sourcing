@@ -313,6 +313,26 @@ model Settings {
   inboxLastCheckedAt DateTime?
   inboxLastError  String?
 
+  /// Send from a machine outside this server.
+  ///
+  /// BizBuySell blocks this host's IP — every search page and every listing page
+  /// is refused, while the operator's own connection reaches the site normally.
+  /// With this on, the server still discovers, tracks and reports, but hands the
+  /// sending to a local agent over the API and never dials out itself. Sending
+  /// twice from two places is the one thing that must not happen, so the server
+  /// stops entirely rather than racing.
+  agentEnabled Boolean @default(false)
+
+  /// Shared secret for the agent endpoints.
+  ///
+  /// Those endpoints hand out real listings and record real sends, and this
+  /// dashboard has no login, so without a secret anyone who found the URL could
+  /// mark brokers as contacted or drain the queue.
+  agentToken String?
+
+  /// Last time the agent checked in. Turns "is it running?" into a fact.
+  agentLastSeenAt DateTime?
+
   /// Which saved search the scheduler and the arming switch actually run.
   ///
   /// This was inferred from timestamps and both guesses were wrong in turn.

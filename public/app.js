@@ -462,6 +462,8 @@ async function loadSettings() {
   $('phone').value = settings.phone ?? '';
   $('messageTemplate').value = settings.messageTemplate ?? '';
   $('sendingEnabled').checked = settings.sendingEnabled;
+  $('agentEnabled').checked = settings.agentEnabled;
+  paintAgent(settings, sentToday);
   $('inboxEnabled').checked = settings.inboxEnabled;
   $('inboxProvider').value = settings.inboxProvider ?? 'graph';
   $('graphTenantId').value = settings.graphTenantId ?? '';
@@ -531,6 +533,8 @@ $('saveSettings').onclick = async () => {
         transport: $('transport').value,
         bizbuysellEmail: $('bbsEmail').value || null,
         bizbuysellPassword: $('bbsPassword').value || null,
+        agentEnabled: $('agentEnabled').checked,
+        agentToken: $('agentToken').value || null,
         inboxEnabled: $('inboxEnabled').checked,
         inboxProvider: $('inboxProvider').value,
         graphTenantId: $('graphTenantId').value || null,
@@ -636,6 +640,61 @@ function showInboxFields() {
   $('inboxPassword').closest('div').style.display = graph ? 'none' : '';
 }
 $('inboxProvider').onchange = showInboxFields;
+
+/**
+ * Is the agent actually running?
+ *
+ * "Switched on" and "running" are different things, and the gap between them is
+ * where someone waits a week for messages that were never going to be sent. The
+ * server records when the agent last called in, so this reports the fact rather
+ * than the intention.
+ */
+function paintAgent(settings, sentToday) {
+  const seen = settings.agentLastSeenAt ? new Date(settings.agentLastSeenAt) : null;
+  const minsAgo = seen ? Math.round((Date.now() - seen.getTime()) / 60000) : null;
+  const live = minsAgo !== null && minsAgo < 10;
+
+  const el = $('agentStatus');
+  if (!settings.agentEnabled) {
+    el.innerHTML = 'Off — the server will try to send, and BizBuySell refuses it.';
+  } else if (live) {
+    el.innerHTML =
+      `<span style="color:#8ee79c">Running</span> — last checked in ${minsAgo === 0 ? 'just now' : minsAgo + ' min ago'}. ` +
+      `${sentToday}/${settings.dailyCap} sent today.`;
+  } else if (seen) {
+    el.innerHTML =
+      `<span style="color:#f0cd7e">Not running</span> — last seen ${minsAgo} min ago. ` +
+      `Start run-agent.cmd on the machine that sends.`;
+  } else {
+    el.innerHTML =
+      '<span style="color:#f0cd7e">Never started</span> — generate a token below, then run run-agent.cmd.';
+  }
+
+  const token = settings.agentTokenHint ? '' : $('agentToken').value;
+  $('agentEnvBlock').textContent =
+    `AGENT_BASE_URL=${location.origin}\n` +
+    `AGENT_TOKEN=${token || settings.agentTokenHint || '<click Generate>'}`;
+}
+
+$('genAgentToken').onclick = () => {
+  // Generated in the browser so a fresh secret never needs to travel anywhere
+  // it is not already going.
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const token = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  $('agentToken').value = token;
+  $('agentEnvBlock').textContent = `AGENT_BASE_URL=${location.origin}\nAGENT_TOKEN=${token}`;
+  toast('Token generated — press Save settings, then copy the .env lines');
+};
+
+$('copyAgentEnv').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($('agentEnvBlock').textContent);
+    toast('Copied — paste into .env in the project folder');
+  } catch {
+    toast('Select the two lines above and copy them');
+  }
+};
 
 $('testInbox').onclick = async () => {
   $('inboxResult').innerHTML = '<p class="muted" style="margin-top:10px">Connecting…</p>';

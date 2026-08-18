@@ -432,7 +432,22 @@ async function contact(
   const settings = await getSettings();
 
   // Both switches must agree. The run asking to send is not enough on its own.
-  const armed = settings.sendingEnabled && !dryRun;
+  //
+  // And when a local agent is doing the sending, the server does not — not
+  // "sends less", not "sends as a fallback". BizBuySell refuses this host's IP,
+  // so every attempt from here fails anyway, but the real reason is stricter
+  // than that: two senders working one queue is how a broker gets messaged
+  // twice, and no amount of claiming logic is worth betting a relationship on
+  // when the server contributes nothing.
+  const armed = settings.sendingEnabled && !dryRun && !settings.agentEnabled;
+
+  if (settings.sendingEnabled && !dryRun && settings.agentEnabled) {
+    await log(
+      runId,
+      'Sending is handled by the local agent — this run discovered and recorded only. ' +
+        'Listings stay queued for the agent to pick up.',
+    );
+  }
 
   if (!settings.fullName || !settings.email) {
     await log(runId, 'No contact name or email in Settings — nothing can be sent.', 'error');

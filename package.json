@@ -13,7 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:deploy": "prisma migrate deploy",
     "probe": "tsx scripts/probe-filters.ts",
-    "selftest": "tsx scripts/selftest.ts"
+    "selftest": "tsx scripts/selftest.ts",
+    "agent": "tsx scripts/agent.ts"
   },
   "dependencies": {
     "@mendable/firecrawl-js": "^1.29.1",
