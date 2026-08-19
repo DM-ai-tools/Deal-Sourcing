@@ -914,9 +914,30 @@ app.get(
     });
 
     const counts = await prisma.listing.groupBy({ by: ['status'], _count: true });
+
+    // Today's movement, which the running totals hide.
+    //
+    // "615 listings, 8 contacted" says nothing about whether the system did
+    // anything this morning — and on a day when the site blocks every request,
+    // those two numbers look identical to a day when it worked. These are the
+    // two that answer "is it running?", which is the question somebody opening
+    // this page actually has.
+    //
+    // Midnight UTC, matching the daily cap and the scheduler. A different day
+    // boundary here would mean the dashboard and the cap disagreed about what
+    // "today" is, which is worse than either choice on its own.
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+
+    const [foundToday, contactedToday] = await Promise.all([
+      prisma.listing.count({ where: { firstSeenAt: { gte: since } } }),
+      prisma.outreach.count({ where: { status: 'sent', sentAt: { gte: since } } }),
+    ]);
+
     ok(res, {
       listings,
       counts: Object.fromEntries(counts.map((c) => [c.status, c._count])),
+      today: { found: foundToday, contacted: contactedToday },
       statuses: STATUSES,
     });
   }),

@@ -81,7 +81,7 @@ async function loadListings() {
   });
 
   try {
-    const { listings, counts, statuses } = await api(`/api/listings?${query}`);
+    const { listings, counts, statuses, today } = await api(`/api/listings?${query}`);
     STATUSES = statuses;
 
     if ($('statusFilter').options.length <= 1) {
@@ -92,13 +92,26 @@ async function loadListings() {
     }
 
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
+
+    // Today first, then the running totals.
+    //
+    // "615 found, 8 contacted" reads the same on a day the system worked and a
+    // day the site refused every request. Today's two numbers are the ones that
+    // answer "is this actually running?", so they lead — and they are styled
+    // live so a zero is visible rather than blending into the row.
+    const t = today ?? { found: 0, contacted: 0 };
     $('stats').innerHTML = [
-      ['Listings found', total],
-      ['Contacted', counts.email_sent ?? 0],
-      ['In progress', (counts.in_progress ?? 0) + (counts.cim_sent ?? 0) + (counts.nda_signed ?? 0)],
-      ['Deal flow', counts.deal_flow ?? 0],
+      ['New today', t.found, true],
+      ['Contacted today', t.contacted, true],
+      ['Listings found', total, false],
+      ['Contacted', counts.email_sent ?? 0, false],
+      ['In progress', (counts.in_progress ?? 0) + (counts.cim_sent ?? 0) + (counts.nda_signed ?? 0), false],
+      ['Deal flow', counts.deal_flow ?? 0, false],
     ]
-      .map(([label, value]) => `<div class="stat"><b>${value}</b><span>${label}</span></div>`)
+      .map(
+        ([label, value, isToday]) =>
+          `<div class="stat${isToday ? ' today' : ''}"><b>${value}</b><span>${label}</span></div>`,
+      )
       .join('');
 
     if (!listings.length) {
