@@ -34,6 +34,7 @@
  */
 import { chromium, type BrowserContext, type Page } from 'patchright';
 import { env } from './env.js';
+import { restoreCookies, saveCookies } from './cookie-jar.js';
 
 /**
  * The ways this system can reach BizBuySell.
@@ -288,7 +289,21 @@ class BrowserTransport implements Transport {
         ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
       });
 
+      // Put the previous session back before the first navigation.
+      //
+      // The profile dir is wiped on every Railway restart, so without this the
+      // browser meets Akamai as a brand-new visitor several times a day. A
+      // returning client carrying a live _abck is treated very differently
+      // from a stranger who arrives and immediately requests a filtered search.
+      const restored = await restoreCookies(this.context);
+      if (restored) console.log(`[transport] restored ${restored} cookie(s) from the last session`);
+
       await this.warmUp();
+
+      // Save what the warm-up earned. This is a session the site has just
+      // accepted, which is the only kind worth keeping.
+      await saveCookies(this.context).catch(() => {});
+
       return this.context;
     } catch (err) {
       await this.context?.close().catch(() => {});

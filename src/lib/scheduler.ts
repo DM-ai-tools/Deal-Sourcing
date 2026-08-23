@@ -13,7 +13,7 @@
  * produce one run, not ten, and that property is what makes an unattended
  * sender safe to leave switched on.
  */
-import { prisma, getSettings, resolveActiveSearch } from './db.js';
+import { prisma, getSettings, resolveActiveSearch, countSentToday } from './db.js';
 import { executeRun } from './runner.js';
 import { checkInbox } from './inbox.js';
 
@@ -22,6 +22,24 @@ const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
 /** How often to read the inbox. A waiting broker is the thing being optimised. */
 const INBOX_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * How long to wait before trying again on a day that has sent nothing.
+ *
+ * Long enough that we are not hammering a host which just refused us — that is
+ * how a soft block hardens — and short enough to catch a window that opens
+ * mid-afternoon. Akamai's verdict here changes over hours.
+ */
+const RETRY_AFTER_MS = 75 * 60 * 1000;
+
+/**
+ * Attempts per day before giving up until tomorrow.
+ *
+ * Six spread across the day is roughly one every two waking hours. Past that
+ * the day is genuinely blocked and further requests only damage the address
+ * we are trying to rehabilitate.
+ */
+const MAX_ATTEMPTS_PER_DAY = 6;
 
 /** Midnight UTC today. The day boundary is fixed rather than local so it does
  *  not shift under the container, which has no timezone configured. */
@@ -59,11 +77,42 @@ export async function maybeRunDailyScan(force = false): Promise<string> {
   // start a second scan on top of the one that began at 14:00.
   const since = startOfUtcDay();
   if (!force) {
-    const alreadyToday = await prisma.run.findFirst({
+    const runsToday = await prisma.run.findMany({
       where: { startedAt: { gte: since } },
-      select: { id: true },
+      orderBy: { startedAt: 'desc' },
+      select: { id: true, startedAt: true, messagesSent: true },
     });
-    if (alreadyToday) return 'Already scanned today.';
+
+    if (runsToday.length) {
+      // One attempt a day was throwing the day away.
+      //
+      // Akamai blocks this address intermittently, not permanently — 42
+      // messages have gone out across several days, and on the bad days every
+      // single request is refused from the first one. A single 14:00 attempt
+      // means one refused afternoon costs an entire day of outreach, and the
+      // listings simply queue up.
+      //
+      // So a day that has produced nothing gets tried again. The site's mood
+      // changes over hours; ours should too.
+      const sentToday = await countSentToday();
+      const settings2 = await getSettings();
+
+      if (!settings2.sendingEnabled) return 'Already scanned today.';
+      if (sentToday >= settings2.dailyCap) return `Daily cap reached (${sentToday}).`;
+      if (runsToday.length >= MAX_ATTEMPTS_PER_DAY) {
+        return `Already tried ${runsToday.length} times today; leaving it until tomorrow.`;
+      }
+
+      // Space the retries out. Hammering a host that just refused us is how a
+      // soft block becomes a hard one, and the whole point is to come back when
+      // the site's answer might genuinely have changed.
+      const lastAt = runsToday[0]?.startedAt;
+      const waited = lastAt ? Date.now() - new Date(lastAt).getTime() : Infinity;
+      if (waited < RETRY_AFTER_MS) {
+        const mins = Math.ceil((RETRY_AFTER_MS - waited) / 60000);
+        return `Nothing sent yet today; retrying in ${mins} min.`;
+      }
+    }
   }
 
   const search = await resolveActiveSearch();

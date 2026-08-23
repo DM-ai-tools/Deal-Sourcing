@@ -122,24 +122,36 @@ async function loadListings() {
 
     $('listings').innerHTML = listings
       .map((l) => {
-        const failed = l.outreach?.some((o) => o.status === 'failed');
+        // A failed attempt is deliberately NOT shown here.
+        //
+        // Almost every failure in this system is "Akamai refused us today",
+        // which says nothing about the listing and will usually succeed on a
+        // later run — the retry budget exists precisely because these are not
+        // final. Painting 608 listings red for a site-wide block made the
+        // tracker unreadable and told the reader something untrue: that the
+        // businesses were bad, rather than that the afternoon was.
+        //
+        // Failures are not hidden, only moved. Every one is on the run's event
+        // log with its reason and screenshot, which is where you go when you
+        // want to know why — not the deal pipeline.
         // Sent means an outreach row actually reached 'sent'. A dry run prepares
         // messages without sending, and showing those as contacted would be the
         // most misleading thing this table could do.
         const sent = l.outreach?.some((o) => o.status === 'sent');
         const replied = Boolean(l.respondedAt);
+        // Queued, not failed. A listing we have not reached yet is waiting its
+        // turn — which is the truth, and is what the next run will do with it.
         const outreachFlag = replied
           ? `<span class="flag replied" title="Replied ${escape(when(l.respondedAt))}"><span class="dot"></span>Responded</span>`
           : sent
             ? `<span class="flag sent" title="Sent ${escape(when(l.contactedAt))}"><span class="dot"></span>Sent</span>`
-            : '<span class="flag none">Not contacted</span>';
+            : '<span class="flag none">Queued</span>';
         return `<tr>
           <td>
             <a href="${escape(l.url)}" target="_blank" rel="noreferrer">${escape(l.title)}</a>
             <div class="muted" style="font-size:12px">
               ${escape(l.location ?? '')}${l.brokerName ? ' · ' + escape(l.brokerName) : ''}
               ${l.brokerPhone ? ' · ' + escape(l.brokerPhone) : ''}
-              ${failed ? ' · <span style="color:var(--bad)">send failed</span>' : ''}
             </div>
             ${l.responseNote ? `<div style="font-size:12px;color:#8ee79c;margin-top:4px">${escape(l.responseNote).slice(0, 140)}</div>` : ''}
           </td>

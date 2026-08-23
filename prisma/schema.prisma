@@ -342,5 +342,16 @@ model Settings {
   /// anyone. Which buy-box is live is a decision, not something to derive.
   activeSearchId String?
 
+  /// Akamai's cookie jar, kept across restarts.
+  ///
+  /// The browser profile lives in the container's temp dir, which Railway wipes
+  /// on every deploy and crash — so Chrome launched with an empty jar several
+  /// times a day and met Akamai as a first-time visitor with no _abck, asking
+  /// straight for a filtered search page. That is the profile of a scraper.
+  /// Postgres survives what the filesystem does not, and needs no Volume that
+  /// somebody has to remember to reattach.
+  browserCookies   Json?
+  browserCookiesAt DateTime?
+
   updatedAt DateTime @updatedAt @default(now())
 }
