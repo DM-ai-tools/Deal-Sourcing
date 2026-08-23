@@ -285,6 +285,22 @@ class BrowserTransport implements Transport {
           // Railway exposes no --shm-size control, so this stays even though
           // patchright would prefer an untouched flag set. Knowing trade-off.
           '--disable-dev-shm-usage',
+          // Rendered, but not on anybody's desk.
+          //
+          // headless:false is not a preference — headless Chromium gets a flat
+          // 403 from Akamai, which is why this browser is headed at all. But a
+          // headed browser on the operator's laptop throws a Chrome window in
+          // front of them every few minutes while the agent works, which makes
+          // the machine unusable for anything else and is the fastest way for a
+          // long-running sender to get closed.
+          //
+          // So the window is moved off the desktop instead of hidden. Chrome
+          // still paints, still reports a real viewport, still passes every
+          // check that failing headless would not — it is simply positioned
+          // where no monitor reaches. In the container this is inert: Xvfb has
+          // no visible desktop for it to matter on.
+          '--window-position=-32000,-32000',
+          '--window-size=1280,900',
         ],
         ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
       });
@@ -447,6 +463,11 @@ class CamoufoxTransport implements Transport {
 
       this.browser = (await Camoufox({
         headless: false,
+        // Same reasoning as the Chrome path: headed because detection demands
+        // it, off the desktop because nobody wants a Firefox window appearing
+        // while they work. Inert under Xvfb in the container.
+        window: [1280, 900],
+        screen: { minWidth: 1280, minHeight: 900 },
         // Camoufox's own cursor-movement humanisation. Behavioural signals are
         // the layer no fingerprint patch reaches, so this is worth having on.
         humanize: true,
