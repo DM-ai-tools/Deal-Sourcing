@@ -56,7 +56,46 @@ interface Job {
   phone: string;
 }
 
+/**
+ * The live line at the bottom of the terminal.
+ *
+ * Deliberately NOT logged. This redraws several times a second during a
+ * countdown, and a log file full of half-finished progress bars is unreadable
+ * afterwards — the log is the permanent record, this is the window someone
+ * glances at. Kept on one line so it never scrolls the history away.
+ */
+let statusOpen = false;
+
+function status(text: string) {
+  if (!process.stdout.isTTY) return; // piped to a file: no cursor to move
+  const line = text.slice(0, 100).padEnd(100);
+  process.stdout.write(`\r${line}`);
+  statusOpen = true;
+}
+
+/** Clear the live line so a permanent message lands on a clean row. */
+function clearStatus() {
+  if (statusOpen && process.stdout.isTTY) {
+    process.stdout.write(`\r${' '.repeat(100)}\r`);
+    statusOpen = false;
+  }
+}
+
+/**
+ * Today's progress, at a glance.
+ *
+ * The cap is the thing worth seeing: the agent spends most of its life waiting
+ * minutes between sends, and without this it looks identical to an agent that
+ * has hung. A bar answers "is it working" without reading a single log line.
+ */
+function bar(done: number, total: number, width = 22): string {
+  const safeTotal = Math.max(1, total);
+  const filled = Math.min(width, Math.round((done / safeTotal) * width));
+  return `[${'#'.repeat(filled)}${'.'.repeat(width - filled)}] ${done}/${total}`;
+}
+
 function say(message: string) {
+  clearStatus();
   const line = `${new Date().toISOString().slice(0, 19).replace('T', ' ')}  ${message}`;
   console.log(line);
   // A background process nobody is watching needs a record that outlives the
@@ -66,6 +105,26 @@ function say(message: string) {
   } catch {
     /* logging must never be the reason sending stops */
   }
+}
+
+/**
+ * Sleep, showing what is being waited for.
+ *
+ * Every wait in this agent is minutes long — pacing between sends, idling for
+ * a queue, backing off a block. Waiting in silence is indistinguishable from
+ * being frozen, which is why the countdown exists.
+ */
+async function waitWith(ms: number, label: string, done = 0, total = 0): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until && !stopping) {
+    const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+    const mins = Math.floor(left / 60);
+    const secs = String(left % 60).padStart(2, '0');
+    const progress = total > 0 ? `${bar(done, total)}  ` : '';
+    status(`  ${progress}${label} ${mins}:${secs}`);
+    await sleep(Math.min(1000, until - Date.now()));
+  }
+  clearStatus();
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -171,8 +230,8 @@ async function main() {
       continue;
     }
     if (config.remainingToday <= 0) {
-      say(`daily cap reached (${config.sentToday}/${config.dailyCap}) — idling until tomorrow.`);
-      await sleep(IDLE_MS);
+      say(`daily cap reached (${config.sentToday}/${config.dailyCap}) — done for today.`);
+      await waitWith(IDLE_MS, 'idle, re-checking in', config.sentToday, config.dailyCap);
       continue;
     }
 
@@ -188,8 +247,8 @@ async function main() {
       continue;
     }
     if (!claim.jobs.length) {
-      say('nothing queued — idling.');
-      await sleep(IDLE_MS);
+      say('nothing queued — waiting for the next crawl.');
+      await waitWith(IDLE_MS, 'checking again in', config.sentToday, config.dailyCap);
       continue;
     }
 
@@ -246,8 +305,7 @@ async function main() {
             (config.minDelaySeconds +
               Math.random() * Math.max(1, config.maxDelaySeconds - config.minDelaySeconds)) *
             1000;
-          say(`   next in ${Math.round(wait / 1000)}s`);
-          await sleep(wait);
+          await waitWith(wait, 'next send in', config.sentToday, config.dailyCap);
         }
       }
     } finally {

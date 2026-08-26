@@ -12,8 +12,18 @@ REM ---------------------------------------------------------------------------
 cd /d "%~dp0"
 title BizBuySell sending agent
 echo Starting the sending agent. Close this window to stop.
+echo Chrome runs off-screen - nothing will appear in front of you.
 echo Log: %~dp0agent.log
 echo.
+
+REM Checked rather than assumed. A missing node_modules - after a fresh clone,
+REM or a half-finished install - otherwise prints a wall of red that reads like
+REM a broken agent rather than a missing dependency.
+if not exist "node_modules\" (
+  echo First run - installing dependencies, this takes a minute...
+  call npm install --silent
+  echo.
+)
 :loop
 call npm run agent
 echo.
