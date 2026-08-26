@@ -28,6 +28,11 @@
  *   npm run agent
  */
 import 'dotenv/config';
+
+// This machine keeps its browser profile on a real disk that survives reboots,
+// so it has none of the problem the cookie jar solves — and no database to hold
+// one. Saying so up front avoids a Prisma connection error on every launch.
+process.env.COOKIE_JAR ??= 'off';
 import { appendFileSync } from 'node:fs';
 import { makeBrowserTransport } from '../src/lib/transport.js';
 import { sendEnquiry } from '../src/lib/outreach.js';
@@ -289,6 +294,23 @@ async function main() {
           say(`   SENT — ${report?.recorded ?? 'recorded'}`);
         } else {
           const error = 'error' in outcome ? (outcome.error ?? '') : '';
+
+          // The one failure that is not about BizBuySell at all.
+          //
+          // Chrome takes an exclusive lock on its profile directory, so a
+          // second agent gets "Opening in existing browser session" — which
+          // reads like a browser fault and is actually "you already have one
+          // of these running". Say that instead, and stop, because two agents
+          // racing the same queue is exactly what the claim system exists to
+          // prevent and there is no point retrying into a lock.
+          if (/already in use|existing browser session/i.test(error)) {
+            say('');
+            say('Another sending agent is already running on this machine.');
+            say('Only one can use the browser profile at a time — this one is stopping.');
+            say('Close the other window first if you meant to restart it.');
+            stopping = true;
+            break;
+          }
           const blocked = /blocked|ERR_HTTP_RESPONSE_CODE_FAILURE|net::|bot wall|never rendered/i.test(error);
           blockedInARow = blocked ? blockedInARow + 1 : 0;
           say(`   failed — ${error.slice(0, 100)}`);

@@ -24,6 +24,31 @@ import type { BrowserContext } from 'patchright';
 import { prisma } from './db.js';
 
 /**
+ * Whether this process has a database worth asking.
+ *
+ * The jar exists for ONE environment: the Railway container, whose browser
+ * profile is wiped on every deploy. The local sending agent has neither the
+ * problem nor the database — its profile sits on a real disk that survives
+ * reboots, and DATABASE_URL there points at a localhost Postgres that does not
+ * exist. Left unguarded, every browser launch on that machine printed a Prisma
+ * connection failure before doing the work correctly anyway.
+ *
+ * So: one attempt, and if there is no database, stop asking. Cookie
+ * persistence is an optimisation, and an optimisation that cannot run is not a
+ * failure worth reporting twice — let alone on every launch, forever.
+ */
+let jarAvailable: boolean | null = null;
+
+/**
+ * Read the switch when it is needed, not when this module loads.
+ *
+ * Module-level would be wrong: ES imports are hoisted, so a caller setting
+ * COOKIE_JAR in its own body sets it AFTER this file has already been
+ * evaluated, and the switch would silently never apply.
+ */
+const jarOff = () => process.env.COOKIE_JAR === 'off';
+
+/**
  * How long a saved jar is worth restoring.
  *
  * Akamai's `_abck` is refreshed constantly and its validity is measured in
@@ -53,6 +78,7 @@ interface StoredCookie {
  * because arriving cold still works often enough to be worth trying.
  */
 export async function restoreCookies(context: BrowserContext): Promise<number> {
+  if (jarOff() || jarAvailable === false) return 0;
   try {
     const settings = await prisma.settings.findUnique({
       where: { id: 1 },
@@ -74,8 +100,15 @@ export async function restoreCookies(context: BrowserContext): Promise<number> {
     if (!live.length) return 0;
 
     await context.addCookies(live);
+    jarAvailable = true;
     return live.length;
-  } catch {
+  } catch (err) {
+    // A database that is not there is a fact about the environment, not a
+    // fault: record it once and stop asking, so the local agent does not print
+    // a connection failure before every single send.
+    if (/reach database|ECONNREFUSED|P1001/i.test((err as Error)?.message ?? '')) {
+      jarAvailable = false;
+    }
     return 0;
   }
 }
@@ -87,6 +120,7 @@ export async function restoreCookies(context: BrowserContext): Promise<number> {
  * demonstrably worked rather than one that was merely attempted.
  */
 export async function saveCookies(context: BrowserContext): Promise<number> {
+  if (jarOff() || jarAvailable === false) return 0;
   try {
     const all = await context.cookies();
     const keep = all
@@ -111,8 +145,12 @@ export async function saveCookies(context: BrowserContext): Promise<number> {
         browserCookiesAt: new Date(),
       },
     });
+    jarAvailable = true;
     return keep.length;
-  } catch {
+  } catch (err) {
+    if (/reach database|ECONNREFUSED|P1001/i.test((err as Error)?.message ?? '')) {
+      jarAvailable = false;
+    }
     return 0;
   }
 }
