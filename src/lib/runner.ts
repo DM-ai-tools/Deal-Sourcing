@@ -447,6 +447,16 @@ async function contact(
       'Sending is handled by the local agent — this run discovered and recorded only. ' +
         'Listings stay queued for the agent to pick up.',
     );
+    // Stop here. This said the right thing and then did the opposite.
+    //
+    // Without the return it fell straight into the contact loop with
+    // armed=false, which opens a browser and loads EVERY queued listing page
+    // just to fill a form it will not submit. Against a site that refuses this
+    // host that is 549 blocked page loads, seven minutes of work and a wall of
+    // warnings, repeated on every scheduled run — for a result the agent
+    // produces anyway. The queue is already written by discovery; there is
+    // nothing left for the server to do.
+    return;
   }
 
   if (!settings.fullName || !settings.email) {
@@ -693,7 +703,7 @@ async function contact(
         // businesses would be permanently marked as tried and never contacted.
         // The retry budget exists for listings whose form is genuinely broken,
         // not for the days the site says no to everyone.
-        const blocked = /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|bot wall|timed out waiting for the browser/i.test(
+        const blocked = /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|NS_ERROR|bot wall|never rendered|timed out waiting for the browser/i.test(
           outcome.error ?? '',
         );
 
