@@ -703,7 +703,7 @@ async function contact(
         // businesses would be permanently marked as tried and never contacted.
         // The retry budget exists for listings whose form is genuinely broken,
         // not for the days the site says no to everyone.
-        const blocked = /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|NS_ERROR|bot wall|never rendered|timed out waiting for the browser/i.test(
+        const blocked = /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|NS_ERROR|bot wall|timed out waiting for the browser/i.test(
           outcome.error ?? '',
         );
 

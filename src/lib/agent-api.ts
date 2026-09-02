@@ -192,8 +192,20 @@ export async function agentReport(report: AgentReport): Promise<{ recorded: stri
 
   // A block is the site refusing everyone, not this listing being broken, so it
   // must not cost the listing one of its three attempts.
+  // "never rendered" is deliberately NOT here.
+  //
+  // A refunded attempt is for failures that are not the listing's fault — the
+  // site refusing this address, a connection dying. Those must not burn a
+  // listing's three tries. But a contact form that will not render on ONE page
+  // while fourteen others send perfectly in the same session is that page, not
+  // the network, and refunding it means the attempt cap can never be reached.
+  //
+  // It looped: the same listing was claimed and failed four times in two hours,
+  // each failure handing its attempt straight back, eating a fifth of the daily
+  // cap and crowding out listings that would have worked. Three strikes, then
+  // leave it alone.
   const blocked =
-    /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|bot wall|never rendered/i.test(
+    /blocked by the site|ERR_HTTP_RESPONSE_CODE_FAILURE|ERR_CONNECTION|net::|NS_ERROR|bot wall/i.test(
       report.error ?? '',
     );
 
